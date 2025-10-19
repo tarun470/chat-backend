@@ -1,18 +1,25 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+
 dotenv.config();
 
+const MONGO_URI = process.env.MONGO_URI;
+
 const connectDB = async () => {
-  const MONGO_URI = process.env.MONGO_URI;
+  if (!MONGO_URI) {
+    console.error("❌ MONGO_URI not found in environment variables!");
+    process.exit(1);
+  }
 
   const connect = async () => {
     try {
       await mongoose.connect(MONGO_URI, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-        serverSelectionTimeoutMS: 5000, // retry quickly if network unstable
-        socketTimeoutMS: 45000,
+        serverSelectionTimeoutMS: 5000, // 5 seconds
+        socketTimeoutMS: 45000, // 45 seconds
+        maxPoolSize: 10, // Limit concurrent connections (Render best practice)
+        autoIndex: true,
       });
+
       console.log("✅ MongoDB Atlas Connected Successfully");
     } catch (error) {
       console.error("❌ MongoDB Connection Failed:", error.message);
@@ -21,26 +28,21 @@ const connectDB = async () => {
     }
   };
 
-  mongoose.connection.on("connected", () => {
-    console.log("🟢 MongoDB connected");
-  });
+  connect();
 
-  mongoose.connection.on("reconnected", () => {
-    console.log("🟩 MongoDB reconnected");
-  });
-
+  // 🧠 Handle connection lifecycle events
   mongoose.connection.on("disconnected", () => {
-    console.log("⚠️ MongoDB disconnected — retrying...");
+    console.warn("⚠️ MongoDB disconnected — retrying...");
     setTimeout(connect, 5000);
   });
 
-  mongoose.connection.on("error", (err) => {
-    console.error("🔴 MongoDB error:", err.message);
+  mongoose.connection.on("reconnected", () => {
+    console.log("🔄 MongoDB reconnected successfully");
   });
 
-  // Start initial connection
-  connect();
+  mongoose.connection.on("error", (err) => {
+    console.error("❌ MongoDB connection error:", err.message);
+  });
 };
 
 export default connectDB;
-
