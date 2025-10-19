@@ -11,24 +11,24 @@ dotenv.config();
 // ✅ Connect to MongoDB
 connectDB();
 
-// ✅ Create HTTP server from Express app
+// ✅ Create HTTP server
 const server = http.createServer(app);
 
-// ✅ Initialize Socket.IO server
+// ✅ Socket.IO with CORS
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "*", // allows Flutter or web clients
+    origin: process.env.CLIENT_URL || "*", // frontend URL
     methods: ["GET", "POST"],
     credentials: true,
   },
 });
 
-// ✅ Initialize chat socket handler
+// ✅ Socket handlers
 handleChatSocket(io);
 
-// ✅ Server listen
+// ✅ Start server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 Socket.IO active and listening...`);
 });
