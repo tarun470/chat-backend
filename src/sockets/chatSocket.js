@@ -6,7 +6,6 @@ export const handleChatSocket = (io) => {
   // ✅ Middleware: verify JWT for each connection
   io.use((socket, next) => {
     try {
-      // Token can come via query or auth object
       const token = socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) return next(new Error("Auth error: No token provided"));
 
@@ -36,11 +35,12 @@ export const handleChatSocket = (io) => {
           content: data.content,
         });
 
+        // Format payload compatible with Flutter Message model
         const messagePayload = {
-          id: newMsg._id.toString(),
-          senderId: newMsg.sender.toString(),
+          _id: newMsg._id.toString(),
+          sender: { _id: newMsg.sender.toString() }, // matches Flutter model
           content: newMsg.content,
-          timestamp: newMsg.createdAt,
+          timestamp: newMsg.createdAt.toISOString(), // parseable by DateTime.parse
         };
 
         // Broadcast to all connected clients
@@ -65,5 +65,3 @@ export const handleChatSocket = (io) => {
     });
   });
 };
-
-
