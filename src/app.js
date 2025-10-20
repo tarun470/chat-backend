@@ -5,13 +5,12 @@ import messageRoutes from "./routes/messageRoutes.js";
 
 const app = express();
 
-// ✅ CORS configuration
-// Only allow your deployed Flutter Web frontend
-const allowedOrigin = process.env.CLIENT_URL || "*";
+// ✅ Allowed frontend URL (set in .env)
+const allowedOrigin = process.env.CLIENT_URL || "https://flutter-frontend-1gz1.onrender.com";
 
 app.use(cors({
-  origin: allowedOrigin,
-  credentials: true, // allow cookies/auth headers
+  origin: allowedOrigin, // must be exact URL, not "*"
+  credentials: true,     // allow cookies / auth headers
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 }));
 
@@ -28,4 +27,3 @@ app.get("/", (req, res) => {
 });
 
 export default app;
-
