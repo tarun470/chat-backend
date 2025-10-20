@@ -6,7 +6,8 @@ export const handleChatSocket = (io) => {
   // ✅ Middleware: verify JWT for each connection
   io.use((socket, next) => {
     try {
-      const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+      const token =
+        socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) return next(new Error("Auth error: No token provided"));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -32,18 +33,18 @@ export const handleChatSocket = (io) => {
         // Save message to MongoDB
         const newMsg = await Message.create({
           sender: senderId,
-          content: data.content,
+          content: data.content.trim(),
         });
 
-        // Format payload compatible with Flutter Message model
+        // ✅ Uniform payload for all clients (including sender)
         const messagePayload = {
           _id: newMsg._id.toString(),
-          sender: { _id: newMsg.sender.toString() }, // matches Flutter model
+          senderId: newMsg.sender.toString(), // ✅ consistent field
           content: newMsg.content,
-          timestamp: newMsg.createdAt.toISOString(), // parseable by DateTime.parse
+          timestamp: newMsg.createdAt.toISOString(), // ✅ UTC ISO format
         };
 
-        // Broadcast to all connected clients
+        // ✅ Broadcast to all connected clients
         io.emit("receiveMessage", messagePayload);
         console.log(`💬 Broadcast message from ${socket.userId}: ${newMsg.content}`);
       } catch (error) {
@@ -51,7 +52,7 @@ export const handleChatSocket = (io) => {
       }
     });
 
-    // 🟣 Typing indicator
+    // 🟣 Typing indicator (optional)
     socket.on("typing", (isTyping) => {
       socket.broadcast.emit("userTyping", {
         userId: socket.userId,
