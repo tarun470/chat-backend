@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import Message from "../models/Message.js";
 
 export const handleChatSocket = (io) => {
-  // Middleware: verify JWT for each connection
+  // ✅ Middleware: verify JWT for each connection
   io.use((socket, next) => {
     try {
       const token =
@@ -19,16 +19,11 @@ export const handleChatSocket = (io) => {
     }
   });
 
+  // ✅ Handle connections
   io.on("connection", (socket) => {
     console.log(`✅ User connected: ${socket.id} | UserID: ${socket.userId}`);
 
-    // Join a chat room (optional)
-    socket.on("joinRoom", (roomId) => {
-      socket.join(roomId);
-      console.log(`📥 User ${socket.userId} joined room: ${roomId}`);
-    });
-
-    // Receive and broadcast messages
+    // ✅ Receive and broadcast messages globally
     socket.on("sendMessage", async (data) => {
       try {
         if (!data?.content || !data.content.trim()) return;
@@ -39,7 +34,6 @@ export const handleChatSocket = (io) => {
         const newMsg = await Message.create({
           sender: senderId,
           content: data.content.trim(),
-          room: data.roomId || null, // store roomId if any
         });
 
         const messagePayload = {
@@ -47,38 +41,25 @@ export const handleChatSocket = (io) => {
           senderId: newMsg.sender.toString(),
           content: newMsg.content,
           timestamp: newMsg.createdAt.toISOString(),
-          roomId: data.roomId || null,
         };
 
-        // Broadcast to everyone in the room (or all if no room)
-        if (data.roomId) {
-          io.to(data.roomId).emit("receiveMessage", messagePayload);
-          console.log(`💬 Room ${data.roomId}: ${newMsg.content}`);
-        } else {
-          io.emit("receiveMessage", messagePayload);
-          console.log(`💬 Broadcast message: ${newMsg.content}`);
-        }
+        // 🔹 Global broadcast to all connected clients
+        io.emit("receiveMessage", messagePayload);
+        console.log(`💬 Broadcast message: ${newMsg.content}`);
       } catch (error) {
         console.error("❌ Failed to save or broadcast message:", error.message);
       }
     });
 
-    // Typing indicator
-    socket.on("typing", (data) => {
-      if (data.roomId) {
-        socket.to(data.roomId).emit("userTyping", {
-          userId: socket.userId,
-          isTyping: data.isTyping,
-        });
-      } else {
-        socket.broadcast.emit("userTyping", {
-          userId: socket.userId,
-          isTyping: data.isTyping,
-        });
-      }
+    // Optional: typing indicator
+    socket.on("typing", (isTyping) => {
+      socket.broadcast.emit("userTyping", {
+        userId: socket.userId,
+        isTyping,
+      });
     });
 
-    // Disconnect
+    // Handle disconnect
     socket.on("disconnect", (reason) => {
       console.log(`🔌 User disconnected: ${socket.id} | Reason: ${reason}`);
     });
