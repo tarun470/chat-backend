@@ -3,16 +3,14 @@ import mongoose from "mongoose";
 import Message from "../models/Message.js";
 
 /**
- * Initialize and handle Socket.IO chat
+ * Initialize Socket.IO chat
  * @param {import("socket.io").Server} io
  */
 export const handleChatSocket = (io) => {
-  // ✅ Middleware: Verify JWT on every connection
+  // JWT middleware
   io.use((socket, next) => {
     try {
-      const token =
-        socket.handshake.auth?.token || socket.handshake.query?.token;
-
+      const token = socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) return next(new Error("Auth error: No token provided"));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -24,11 +22,11 @@ export const handleChatSocket = (io) => {
     }
   });
 
-  // ✅ Handle new connections
+  // Connection
   io.on("connection", (socket) => {
     console.log(`✅ User connected: ${socket.id} | UserID: ${socket.userId}`);
 
-    // ✅ Receive and broadcast messages globally
+    // Receive and broadcast messages
     socket.on("sendMessage", async (data) => {
       try {
         if (!data?.content || !data.content.trim()) return;
@@ -41,6 +39,7 @@ export const handleChatSocket = (io) => {
           content: data.content.trim(),
         });
 
+        // Payload for Flutter frontend
         const messagePayload = {
           _id: newMsg._id.toString(),
           senderId: newMsg.sender.toString(),
@@ -48,7 +47,7 @@ export const handleChatSocket = (io) => {
           timestamp: newMsg.createdAt.toISOString(),
         };
 
-        // 🔹 Global broadcast to all connected clients
+        // Broadcast to all connected clients
         io.emit("receiveMessage", messagePayload);
         console.log(`💬 Broadcast message: ${newMsg.content}`);
       } catch (error) {
@@ -64,10 +63,11 @@ export const handleChatSocket = (io) => {
       });
     });
 
-    // Handle disconnect
+    // Disconnect
     socket.on("disconnect", (reason) => {
       console.log(`🔌 User disconnected: ${socket.id} | Reason: ${reason}`);
     });
   });
 };
+
 
