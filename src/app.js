@@ -5,7 +5,7 @@ import messageRoutes from "./routes/messageRoutes.js";
 
 const app = express();
 
-const allowedOrigin = process.env.CLIENT_URL || "https://your-frontend.onrender.com";
+const allowedOrigin = process.env.CLIENT_URL || "https://flutter-frontend-1gz1.onrender.com";
 
 app.use(cors({
   origin: allowedOrigin,         // must be exact frontend URL
