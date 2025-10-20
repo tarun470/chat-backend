@@ -2,12 +2,17 @@ import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import Message from "../models/Message.js";
 
+/**
+ * Initialize and handle Socket.IO chat
+ * @param {import("socket.io").Server} io
+ */
 export const handleChatSocket = (io) => {
-  // ✅ Middleware: verify JWT for each connection
+  // ✅ Middleware: Verify JWT on every connection
   io.use((socket, next) => {
     try {
       const token =
         socket.handshake.auth?.token || socket.handshake.query?.token;
+
       if (!token) return next(new Error("Auth error: No token provided"));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -19,7 +24,7 @@ export const handleChatSocket = (io) => {
     }
   });
 
-  // ✅ Handle connections
+  // ✅ Handle new connections
   io.on("connection", (socket) => {
     console.log(`✅ User connected: ${socket.id} | UserID: ${socket.userId}`);
 
@@ -65,3 +70,4 @@ export const handleChatSocket = (io) => {
     });
   });
 };
+
