@@ -41,7 +41,7 @@ app.get("/", (req, res) => {
   res.send("🚀 Chat backend with uploads is running!");
 });
 
- HEAD
+ 
 
 app.get("/", (req, res) => {
   res.send("🚀 Chat backend is running successfully on Render!");
