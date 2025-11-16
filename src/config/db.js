@@ -9,7 +9,7 @@ const connectDB = async () => {
   if (!MONGO_URI) {
     console.error("❌ MONGO_URI not found in environment variables!");
     process.exit(1);
-  }
+  } 
 
   const connect = async () => {
     try {

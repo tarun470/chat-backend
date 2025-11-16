@@ -5,6 +5,7 @@ import jwt from "jsonwebtoken";
 export const register = async (req, res) => {
   try {
     const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ message: "Missing fields" });
 
     const existing = await User.findOne({ username });
     if (existing) return res.status(400).json({ message: "User already exists" });
@@ -12,15 +13,19 @@ export const register = async (req, res) => {
     const hashed = await bcrypt.hash(password, 10);
     const user = await User.create({ username, password: hashed });
 
-    res.status(201).json({ message: "Registered successfully", user });
+    return res.status(201).json({
+      message: "Registered successfully",
+      user: { id: user._id, username: user.username, nickname: user.nickname },
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
   }
 };
 
 export const login = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, fcmToken } = req.body;
+    if (!username || !password) return res.status(400).json({ message: "Missing fields" });
 
     const user = await User.findOne({ username });
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -28,10 +33,39 @@ export const login = async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ message: "Invalid password" });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+    // mark online + save fcmToken if present
+    user.isOnline = true;
+    if (fcmToken) user.fcmToken = fcmToken;
+    await user.save();
 
-    res.json({ token, user: { id: user._id, username: user.username } });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        nickname: user.nickname,
+        avatar: user.avatar,
+        isOnline: user.isOnline,
+        lastSeen: user.lastSeen,
+      },
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+export const logout = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    user.isOnline = false;
+    user.lastSeen = new Date();
+    user.socketId = null;
+    await user.save();
+    return res.json({ message: "Logged out" });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
   }
 };
