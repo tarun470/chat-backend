@@ -26,7 +26,7 @@ app.use(cors({
 
 app.use(express.json());
 
- HEAD
+ 
 // 🔥 Serve uploads
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
