@@ -5,13 +5,8 @@ import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-
-router.post("/register", register);
-router.post("/login", login);
-router.post("/logout", protect, logout);
-
-// ✅ Register a new user
-router.post("/register", async (req, res, next) => {
+// Register a new user
+router.post("/register", async (req, res) => {
   try {
     await register(req, res);
   } catch (err) {
@@ -20,8 +15,8 @@ router.post("/register", async (req, res, next) => {
   }
 });
 
-// ✅ Login existing user
-router.post("/login", async (req, res, next) => {
+// Login existing user
+router.post("/login", async (req, res) => {
   try {
     await login(req, res);
   } catch (err) {
@@ -30,5 +25,14 @@ router.post("/login", async (req, res, next) => {
   }
 });
 
+// Logout (protected route)
+router.post("/logout", protect, async (req, res) => {
+  try {
+    await logout(req, res);
+  } catch (err) {
+    console.error("Logout error:", err.message);
+    res.status(500).json({ message: "Server error during logout." });
+  }
+});
 
 export default router;
