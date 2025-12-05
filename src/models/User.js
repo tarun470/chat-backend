@@ -2,25 +2,115 @@ import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema(
   {
-    username: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
+    //
+    // AUTH INFO
+    //
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+      index: true,
+    },
 
-    // profile
-    nickname: { type: String, required: true }, // <-- NOW MANDATORY
-    avatar: { type: String, default: null },
+    password: {
+      type: String,
+      required: true,
+      select: false,               // IMPORTANT: Prevents leaking hashed password
+    },
 
-    // real-time status
-    isOnline: { type: Boolean, default: false },
-    lastSeen: { type: Date, default: null },
+    //
+    // PROFILE INFO
+    //
+    nickname: {
+      type: String,
+      required: true,
+      trim: true,
+    },
 
-    // push notifications
-    fcmToken: { type: String, default: null },
+    avatar: {
+      type: String,
+      default: null,
+    },
 
-    // socket
-    socketId: { type: String, default: null },
+    bio: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    //
+    // STATUS & PRESENCE
+    //
+    isOnline: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    lastSeen: {
+      type: Date,
+      default: null,
+    },
+
+    //
+    // PUSH NOTIFICATIONS
+    //
+    fcmToken: {
+      type: String,
+      default: null,
+    },
+
+    //
+    // SOCKET.IO SESSION
+    //
+    socketId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    deviceInfo: {
+      type: String,
+      default: null,
+    },
+
+    //
+    // PRIVACY FEATURES
+    //
+    blockedUsers: [
+      { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
+    ],
+
+    allowReadReceipts: {
+      type: Boolean,
+      default: true,
+    },
+
+    allowLastSeen: {
+      type: Boolean,
+      default: true,
+    },
+
+    //
+    // ACCOUNT STATUS
+    //
+    suspended: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   { timestamps: true }
 );
 
-export default mongoose.model("User", userSchema);
+//
+// INDEXES FOR PERFORMANCE
+//
+userSchema.index({ username: 1 });
+userSchema.index({ isOnline: 1 });
+userSchema.index({ socketId: 1 });
+userSchema.index({ suspended: 1 });
 
+export default mongoose.model("User", userSchema);

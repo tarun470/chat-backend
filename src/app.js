@@ -8,44 +8,44 @@ import uploadRoutes from "./routes/uploadRoutes.js";
 
 const app = express();
 
-const allowedOrigin = process.env.CLIENT_URL || "https://flutter-frontend-1gz1.onrender.com";
+// --------------------------------------------------------------------
+// 🌍 Allowed frontend URL (Flutter Web or local)
+// --------------------------------------------------------------------
+const allowedOrigin =
+  process.env.CLIENT_URL || "https://flutter-frontend-1gz1.onrender.com";
 
-app.use(cors({
- 
-  origin: allowedOrigin,
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+// --------------------------------------------------------------------
+// 🛡 CORS CONFIG - CLEAN + CORRECT
+// --------------------------------------------------------------------
+app.use(
+  cors({
+    origin: allowedOrigin,               // exact frontend URL
+    credentials: true,                   // allow cookies / auth headers
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
-  origin: allowedOrigin,         // must be exact frontend URL
-  credentials: true,             // allow cookies / auth headers
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"], // allow these headers
-
-}));
-
+// Enable JSON body parsing
 app.use(express.json());
 
- 
-// 🔥 Serve uploads
+// --------------------------------------------------------------------
+// 📁 Serve uploaded files
+// --------------------------------------------------------------------
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-// Routes
-
- 
+// --------------------------------------------------------------------
+// 🛣 API ROUTES
+// --------------------------------------------------------------------
 app.use("/api/auth", authRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/upload", uploadRoutes);
 
-app.get("/", (req, res) => {
-  res.send("🚀 Chat backend with uploads is running!");
-});
-
- 
-
+// --------------------------------------------------------------------
+// ROOT ROUTE (single clean response)
+// --------------------------------------------------------------------
 app.get("/", (req, res) => {
   res.send("🚀 Chat backend is running successfully on Render!");
 });
 
- 
 export default app;

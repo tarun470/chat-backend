@@ -1,13 +1,13 @@
 // socket-handlers.js
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import Message from "../models/Message.js";
 import User from "../models/User.js";
-import mongoose from "mongoose";
 
-const onlineUsers = new Map(); // userId -> { socketId, username, lastSeen, isOnline }
+const onlineUsers = new Map(); // userId -> { socketId, username, isOnline, lastSeen }
 
 /**
- * Initialize Socket.IO chat
+ * Initialize Socket.IO Chat
  * @param {import("socket.io").Server} io
  */
 export const handleChatSocket = (io) => {
@@ -16,14 +16,28 @@ export const handleChatSocket = (io) => {
   // -------------------------
   io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.auth?.token || socket.handshake.query?.token;
-      if (!token) return next(new Error("Auth error: No token"));
+      const token =
+        socket.handshake.auth?.token || socket.handshake.query?.token;
+
+      if (!token) return next(new Error("No token provided"));
+
+      if (!process.env.JWT_SECRET) {
+        console.error("❌ JWT_SECRET not set");
+        return next(new Error("Server misconfigured"));
+      }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      socket.userId = decoded.id;
+      if (!decoded?.id) return next(new Error("Invalid token payload"));
 
-      const user = await User.findById(decoded.id).select("username");
-      socket.username = user ? user.username : "Unknown";
+      const user = await User.findById(decoded.id).select(
+        "username nickname avatar"
+      );
+      if (!user) return next(new Error("User not found"));
+
+      socket.userId = user._id.toString();
+      socket.username = user.username;
+      socket.nickname = user.nickname;
+      socket.avatar = user.avatar || null;
 
       next();
     } catch (err) {
@@ -33,146 +47,266 @@ export const handleChatSocket = (io) => {
   });
 
   // -------------------------
-  // CONNECTION
+  // CONNECTION HANDLER
   // -------------------------
   io.on("connection", async (socket) => {
     const userId = socket.userId;
-    console.log(`✅ Socket connected: ${socket.id} | user=${userId}`);
-
-    // register online
-    onlineUsers.set(userId.toString(), { socketId: socket.id, username: socket.username, isOnline: true, lastSeen: null });
-
-    // join personal room (userId) and global
-    socket.join(userId.toString());
-    socket.join("global");
-
-    // update DB
-    try {
-      await User.findByIdAndUpdate(userId, { isOnline: true, socketId: socket.id }, { new: true });
-    } catch (e) {
-      console.warn("Warning updating user socketId/isOnline:", e.message);
+    if (!userId) {
+      console.warn("Socket connected without userId");
+      socket.disconnect(true);
+      return;
     }
 
-    emitOnlineUsers(io);
+    console.log(`✅ Socket connected: ${socket.id} | user=${userId}`);
 
-    // -------------------------
+    // Put into memory map
+    onlineUsers.set(userId, {
+      socketId: socket.id,
+      username: socket.username,
+      nickname: socket.nickname,
+      isOnline: true,
+      lastSeen: null,
+    });
+
+    // Join personal room & default global
+    socket.join(userId);
+    socket.join("global");
+
+    // Mark user online in DB
+    try {
+      await User.findByIdAndUpdate(
+        userId,
+        { isOnline: true, socketId: socket.id, lastSeen: new Date() },
+        { new: true }
+      );
+    } catch (e) {
+      console.warn("Warning updating user isOnline/socketId:", e.message);
+    }
+
+    await emitOnlineUsers(io);
+
+    // =========================
     // HELPERS
-    // -------------------------
-    const safeMessagePayload = async (msgDoc) => {
-      const populated = await Message.findById(msgDoc._id).populate("sender", "username nickname avatar");
-      return messageToPayload(populated);
+    // =========================
+
+    const toObjectId = (id) =>
+      typeof id === "string" ? new mongoose.Types.ObjectId(id) : id;
+
+    const buildMessagePayload = (msgDoc) => {
+      if (!msgDoc) return null;
+
+      const reactionsCount = {};
+      (msgDoc.reactions || []).forEach((r) => {
+        reactionsCount[r.emoji] = (reactionsCount[r.emoji] || 0) + 1;
+      });
+
+      return {
+        _id: msgDoc._id.toString(),
+        sender: msgDoc.sender
+          ? {
+              _id: msgDoc.sender._id.toString(),
+              username: msgDoc.sender.username,
+              nickname: msgDoc.sender.nickname,
+              avatar: msgDoc.sender.avatar || null,
+            }
+          : null,
+        content: msgDoc.content,
+        type: msgDoc.type,
+        fileUrl: msgDoc.fileUrl,
+        fileName: msgDoc.fileName,
+        roomId: msgDoc.roomId,
+        replyTo:
+          msgDoc.replyTo && msgDoc.replyTo._id
+            ? msgDoc.replyTo._id.toString()
+            : msgDoc.replyTo || null,
+        createdAt: msgDoc.createdAt,
+        updatedAt: msgDoc.updatedAt,
+        deliveredTo: (msgDoc.deliveredTo || []).map((id) => id.toString()),
+        seenBy: (msgDoc.seenBy || []).map((id) => id.toString()),
+        edited: !!msgDoc.edited,
+        reactions: reactionsCount,
+        deletedForEveryone: !!msgDoc.deletedForEveryone,
+      };
+    };
+
+    const fetchAndFormatMessage = async (id) => {
+      const doc = await Message.findById(id)
+        .populate("sender", "username nickname avatar")
+        .populate({
+          path: "replyTo",
+          populate: { path: "sender", select: "username nickname avatar" },
+        });
+      return buildMessagePayload(doc);
     };
 
     const computeRecipientsForMessage = async (payload) => {
       try {
-        if (payload.roomId && payload.roomId !== "global") {
-          if (payload.roomId.startsWith("dm:")) {
-            const parts = payload.roomId.split(":").slice(1);
-            const senderId = payload.sender?._id || payload.sender;
-            return parts.filter(p => p !== senderId).map(String);
-          }
-          const sockets = await io.in(payload.roomId).fetchSockets();
-          return sockets.map(s => s.userId).filter(Boolean).filter(id => id !== (payload.sender?._id || payload.sender));
-        } else {
-          const sockets = await io.fetchSockets();
-          return sockets.map(s => s.userId).filter(Boolean).filter(id => id !== (payload.sender?._id || payload.sender));
+        if (!payload) return [];
+
+        const senderId =
+          payload.sender && payload.sender._id
+            ? payload.sender._id.toString()
+            : userId;
+
+        // DM room: dm:<userA>:<userB>
+        if (payload.roomId?.startsWith("dm:")) {
+          const parts = payload.roomId.split(":").slice(1);
+          return parts.filter((id) => id && id !== senderId);
         }
+
+        // Specific room (group or global)
+        const room = payload.roomId || "global";
+        const sockets = await io.in(room).fetchSockets();
+        const ids = sockets
+          .map((s) => s.userId)
+          .filter(Boolean)
+          .map(String)
+          .filter((id) => id !== senderId);
+
+        return Array.from(new Set(ids));
       } catch (err) {
-        console.error("computeRecipientsForMessage error:", err);
+        console.error("computeRecipientsForMessage error:", err.message);
         return [];
       }
     };
 
-    const messageToPayload = (m) => {
-      const reactionsCount = {};
-      (m.reactions || []).forEach((r) => reactionsCount[r.emoji] = (reactionsCount[r.emoji] || 0) + 1);
-      return {
-        _id: m._id.toString(),
-        sender: m.sender ? { _id: m.sender._id.toString(), username: m.sender.username, nickname: m.sender.nickname } : null,
-        content: m.content,
-        type: m.type,
-        fileUrl: m.fileUrl,
-        fileName: m.fileName,
-        roomId: m.roomId,
-        replyTo: m.replyTo ? (m.replyTo._id ? m.replyTo._id.toString() : m.replyTo) : null,
-        createdAt: m.createdAt,
-        updatedAt: m.updatedAt,
-        deliveredTo: (m.deliveredTo || []).map(String),
-        seenBy: (m.seenBy || []).map(String),
-        edited: !!m.edited,
-        reactions: reactionsCount,
-        deletedForEveryone: !!m.deletedForEveryone,
-      };
+    const markDeliveredForRecipients = async (messageId, recipients) => {
+      try {
+        if (!messageId || !recipients || !recipients.length) return;
+
+        await Message.findByIdAndUpdate(messageId, {
+          $addToSet: {
+            deliveredTo: {
+              $each: recipients.map((id) => toObjectId(id)),
+            },
+          },
+        });
+
+        const payload = {
+          messageId: messageId.toString(),
+          deliveredTo: recipients.map(String),
+        };
+
+        recipients.forEach((uid) => io.to(uid).emit("messageDelivered", payload));
+        io.to(userId).emit("messageDelivered", payload);
+      } catch (err) {
+        console.error("markDeliveredForRecipients error:", err.message);
+      }
     };
 
-    // -------------------------
+    const markSeenForUser = async (messageId, uid) => {
+      try {
+        if (!messageId || !uid) return;
+        const msg = await Message.findById(messageId);
+        if (!msg) return;
+
+        const userStr = uid.toString();
+        if (!msg.seenBy.map(String).includes(userStr)) {
+          msg.seenBy.push(toObjectId(uid));
+          await msg.save();
+        }
+
+        const payload = {
+          messageId: msg._id.toString(),
+          seenBy: msg.seenBy.map((id) => id.toString()),
+        };
+
+        io.to(msg.sender.toString()).emit("messageSeen", payload);
+        msg.seenBy.forEach((id) => io.to(id.toString()).emit("messageSeen", payload));
+      } catch (err) {
+        console.error("markSeenForUser error:", err.message);
+      }
+    };
+
+    // =========================
     // EVENTS
-    // -------------------------
+    // =========================
 
     // SEND MESSAGE
-    socket.on("sendMessage", async (data) => {
+    socket.on("sendMessage", async (data = {}) => {
       try {
-        const { content, roomId, type, receiver, replyTo, fileUrl, fileName } = data || {};
-        if ((type === "text" && (!content || !content.trim())) && !fileUrl) return;
+        const {
+          content,
+          roomId,
+          type,
+          receiver,
+          replyTo,
+          fileUrl,
+          fileName,
+          tempId,
+        } = data;
+
+        if (
+          (!content || !content.toString().trim()) &&
+          !fileUrl &&
+          type !== "system"
+        ) {
+          return;
+        }
+
+        let finalRoomId = roomId || "global";
+
+        // Direct message room
+        if (receiver && !roomId) {
+          const a = userId.toString();
+          const b = receiver.toString();
+          const ordered = [a, b].sort();
+          finalRoomId = `dm:${ordered[0]}:${ordered[1]}`;
+        }
 
         const msg = await Message.create({
-          sender: new mongoose.Types.ObjectId(userId),
-          receiver: receiver ? new mongoose.Types.ObjectId(receiver) : null,
-          roomId: roomId || (receiver ? `dm:${[userId, receiver].sort().join(":")}` : "global"),
+          sender: toObjectId(userId),
+          receiver: receiver ? toObjectId(receiver) : null,
+          roomId: finalRoomId,
           content: content || "",
           type: type || (fileUrl ? "file" : "text"),
           fileUrl: fileUrl || null,
           fileName: fileName || null,
-          replyTo: replyTo ? new mongoose.Types.ObjectId(replyTo) : null,
+          replyTo: replyTo ? toObjectId(replyTo) : null,
         });
 
-        const payload = await safeMessagePayload(msg);
+        const payload = await fetchAndFormatMessage(msg._id);
+        if (!payload) return;
 
+        // Emit message
         if (receiver) {
           io.to(receiver.toString()).emit("receiveMessage", payload);
           socket.emit("receiveMessage", payload);
         } else {
-          io.to(payload.roomId).emit("receiveMessage", payload);
+          io.to(finalRoomId).emit("receiveMessage", payload);
         }
 
+        // Compute recipients & mark delivered
         const recipients = await computeRecipientsForMessage(payload);
-        if (recipients.length > 0) {
-          await Message.findByIdAndUpdate(msg._id, {
-            $addToSet: { deliveredTo: { $each: recipients.map(id => new mongoose.Types.ObjectId(id)) } }
-          });
-          const deliveredPayload = { messageId: payload._id, deliveredTo: recipients };
-          recipients.forEach(id => io.to(id.toString()).emit("messageDelivered", deliveredPayload));
-          io.to(userId.toString()).emit("messageDelivered", deliveredPayload);
+        if (recipients.length) {
+          await markDeliveredForRecipients(msg._id, recipients);
         }
       } catch (err) {
         console.error("sendMessage error:", err.message);
       }
     });
 
-    // BROADCAST MESSAGE
-    socket.on("broadcastMessage", async (data) => {
+    // BROADCAST MESSAGE (system / global)
+    socket.on("broadcastMessage", async (data = {}) => {
       try {
-        const { content, roomId } = data || {};
+        const { content, roomId } = data;
         if (!content || !content.toString().trim()) return;
 
         const msg = await Message.create({
-          sender: new mongoose.Types.ObjectId(userId),
+          sender: toObjectId(userId),
           roomId: roomId || "global",
           content,
-          type: "broadcast",
+          type: "system",
         });
 
-        const payload = await safeMessagePayload(msg);
-        io.emit("receiveMessage", payload);
+        const payload = await fetchAndFormatMessage(msg._id);
+        if (!payload) return;
+
+        io.to(payload.roomId).emit("receiveMessage", payload);
 
         const recipients = await computeRecipientsForMessage(payload);
         if (recipients.length) {
-          await Message.findByIdAndUpdate(msg._id, {
-            $addToSet: { deliveredTo: { $each: recipients.map(id => new mongoose.Types.ObjectId(id)) } }
-          });
-          const deliveredPayload = { messageId: payload._id, deliveredTo: recipients };
-          recipients.forEach(id => io.to(id.toString()).emit("messageDelivered", deliveredPayload));
-          io.to(userId.toString()).emit("messageDelivered", deliveredPayload);
+          await markDeliveredForRecipients(msg._id, recipients);
         }
       } catch (err) {
         console.error("broadcastMessage error:", err.message);
@@ -180,140 +314,190 @@ export const handleChatSocket = (io) => {
     });
 
     // TYPING
-    socket.on("typing", (data) => {
+    socket.on("typing", (data = {}) => {
       try {
-        const { roomId, isTyping, receiver } = data || {};
+        const { roomId, isTyping, receiver } = data;
+
+        const payload = {
+          userId,
+          username: socket.username,
+          isTyping: !!isTyping,
+        };
+
         if (receiver) {
-          io.to(receiver.toString()).emit("typing", { userId, username: socket.username, isTyping });
+          io.to(receiver.toString()).emit("typing", payload);
         } else {
-          io.to(roomId || "global").emit("typing", { userId, username: socket.username, isTyping });
+          io.to(roomId || "global").emit("typing", payload);
         }
       } catch (err) {
         console.error("typing error:", err.message);
       }
     });
 
-    // MESSAGE DELIVERED
-    socket.on("delivered", async ({ messageId }) => {
+    // DELIVERED (client ACK)
+    socket.on("delivered", async ({ messageId } = {}) => {
       try {
         if (!messageId) return;
         const msg = await Message.findById(messageId);
         if (!msg) return;
 
-        if (!msg.deliveredTo.map(String).includes(userId.toString())) {
-          msg.deliveredTo.push(userId);
+        const me = userId.toString();
+        if (!msg.deliveredTo.map(String).includes(me)) {
+          msg.deliveredTo.push(toObjectId(userId));
           await msg.save();
         }
 
-        const deliveredPayload = { messageId: msg._id.toString(), deliveredTo: msg.deliveredTo.map(String) };
-        io.to(msg.sender.toString()).emit("messageDelivered", deliveredPayload);
-        msg.deliveredTo.forEach(id => io.to(id.toString()).emit("messageDelivered", deliveredPayload));
+        const payload = {
+          messageId: msg._id.toString(),
+          deliveredTo: msg.deliveredTo.map((id) => id.toString()),
+        };
+
+        io.to(msg.sender.toString()).emit("messageDelivered", payload);
+        msg.deliveredTo.forEach((id) =>
+          io.to(id.toString()).emit("messageDelivered", payload)
+        );
       } catch (err) {
         console.error("delivered error:", err.message);
       }
     });
 
-    // MESSAGE SEEN
-    socket.on("seen", async ({ messageId }) => {
+    // SEEN (client ACK)
+    socket.on("seen", async ({ messageId } = {}) => {
       try {
         if (!messageId) return;
-        const msg = await Message.findById(messageId);
-        if (!msg) return;
-
-        if (!msg.seenBy.map(String).includes(userId.toString())) {
-          msg.seenBy.push(userId);
-          await msg.save();
-        }
-
-        const seenPayload = { messageId: msg._id.toString(), seenBy: msg.seenBy.map(String) };
-        io.to(msg.sender.toString()).emit("messageSeen", seenPayload);
-        msg.seenBy.forEach(id => io.to(id.toString()).emit("messageSeen", seenPayload));
+        await markSeenForUser(messageId, userId);
       } catch (err) {
         console.error("seen error:", err.message);
       }
     });
 
     // EDIT MESSAGE
-    socket.on("editMessage", async ({ messageId, content }) => {
+    socket.on("editMessage", async ({ messageId, content } = {}) => {
       try {
-        if (!messageId) return;
+        if (!messageId || !content?.toString().trim()) return;
+
         const msg = await Message.findById(messageId);
-        if (!msg || msg.sender.toString() !== userId.toString()) return;
+        if (!msg) return;
+        if (msg.sender.toString() !== userId.toString()) return;
 
         msg.content = content;
         msg.edited = true;
         await msg.save();
 
-        const payload = messageToPayload(await msg.populate("sender", "username nickname avatar"));
-        const recipients = await computeRecipientsForMessage(payload);
+        const populated = await Message.findById(messageId).populate(
+          "sender",
+          "username nickname avatar"
+        );
+        const payload = buildMessagePayload(populated);
+        if (!payload) return;
 
-        recipients.forEach(id => io.to(id.toString()).emit("messageEdited", payload));
-        io.to(userId.toString()).emit("messageEdited", payload);
+        const recipients = await computeRecipientsForMessage(payload);
+        recipients.forEach((id) =>
+          io.to(id.toString()).emit("messageEdited", payload)
+        );
+        io.to(userId).emit("messageEdited", payload);
       } catch (err) {
         console.error("editMessage error:", err.message);
       }
     });
 
     // DELETE MESSAGE
-    socket.on("deleteMessage", async ({ messageId, forEveryone }) => {
+    socket.on("deleteMessage", async ({ messageId, forEveryone } = {}) => {
       try {
         if (!messageId) return;
         const msg = await Message.findById(messageId);
         if (!msg) return;
 
+        const isSender = msg.sender.toString() === userId.toString();
+
         if (forEveryone) {
-          if (msg.sender.toString() !== userId.toString()) return;
+          if (!isSender) return;
           msg.deletedForEveryone = true;
           await msg.save();
 
-          const payload = { messageId: msg._id.toString(), forEveryone: true };
-          const recipients = await computeRecipientsForMessage(messageToPayload(msg));
-          recipients.forEach(id => io.to(id.toString()).emit("messageDeleted", payload));
-          io.to(userId.toString()).emit("messageDeleted", payload);
+          const tmpPayload = buildMessagePayload(msg);
+          const recipients = await computeRecipientsForMessage(tmpPayload);
+
+          const payload = {
+            messageId: msg._id.toString(),
+            forEveryone: true,
+          };
+
+          recipients.forEach((id) =>
+            io.to(id.toString()).emit("messageDeleted", payload)
+          );
+          io.to(userId).emit("messageDeleted", payload);
         } else {
           msg.deletedFor = msg.deletedFor || [];
-          if (!msg.deletedFor.map(String).includes(userId.toString())) {
-            msg.deletedFor.push(userId);
+          const me = userId.toString();
+          if (!msg.deletedFor.map(String).includes(me)) {
+            msg.deletedFor.push(toObjectId(userId));
             await msg.save();
           }
-          socket.emit("messageDeleted", { messageId: msg._id.toString(), forEveryone: false });
+
+          socket.emit("messageDeleted", {
+            messageId: msg._id.toString(),
+            forEveryone: false,
+          });
         }
       } catch (err) {
         console.error("deleteMessage error:", err.message);
       }
     });
 
-    // ADD REACTION
-    socket.on("addReaction", async ({ messageId, emoji }) => {
+    // ADD / REMOVE REACTION (TOGGLE)
+    socket.on("addReaction", async ({ messageId, emoji } = {}) => {
       try {
         if (!messageId || !emoji) return;
+
         const msg = await Message.findById(messageId);
         if (!msg) return;
 
-        const index = msg.reactions.findIndex(r => r.emoji === emoji && r.user.toString() === userId.toString());
-        if (index === -1) {
-          msg.reactions.push({ emoji, user: new mongoose.Types.ObjectId(userId) });
+        msg.reactions = msg.reactions || [];
+
+        const idx = msg.reactions.findIndex(
+          (r) =>
+            r.emoji === emoji && r.user.toString() === userId.toString()
+        );
+
+        if (idx === -1) {
+          msg.reactions.push({ emoji, user: toObjectId(userId) });
         } else {
-          msg.reactions.splice(index, 1);
+          msg.reactions.splice(idx, 1);
         }
+
         await msg.save();
 
         const reactionsCount = {};
-        msg.reactions.forEach(r => reactionsCount[r.emoji] = (reactionsCount[r.emoji] || 0) + 1);
-        const payload = { messageId: msg._id.toString(), reactions: reactionsCount };
+        msg.reactions.forEach((r) => {
+          reactionsCount[r.emoji] = (reactionsCount[r.emoji] || 0) + 1;
+        });
 
-        const recipients = await computeRecipientsForMessage(messageToPayload(msg));
-        recipients.forEach(id => io.to(id.toString()).emit("reactionUpdated", payload));
-        io.to(userId.toString()).emit("reactionUpdated", payload);
+        const tmpPayload = buildMessagePayload(msg);
+        const recipients = await computeRecipientsForMessage(tmpPayload);
+
+        const payload = {
+          messageId: msg._id.toString(),
+          reactions: reactionsCount,
+        };
+
+        recipients.forEach((id) =>
+          io.to(id.toString()).emit("reactionUpdated", payload)
+        );
+        io.to(userId).emit("reactionUpdated", payload);
       } catch (err) {
         console.error("addReaction error:", err.message);
       }
     });
 
-    // GET ROOMS
+    // GET ROOMS (for debugging / UI lists)
     socket.on("getRooms", async () => {
       try {
-        const rooms = Array.from(io.sockets.adapter.rooms.keys()).filter(r => !io.sockets.sockets.get(r));
+        const roomsRaw = Array.from(io.sockets.adapter.rooms.entries());
+        const rooms = roomsRaw
+          .filter(([name, set]) => !io.sockets.sockets.get(name))
+          .map(([name]) => name);
+
         socket.emit("roomsList", rooms);
       } catch (err) {
         console.error("getRooms error:", err.message);
@@ -323,32 +507,47 @@ export const handleChatSocket = (io) => {
     // DISCONNECT
     socket.on("disconnect", async (reason) => {
       try {
-        console.log(`🔌 Socket disconnected: ${socket.id} | user=${userId} | reason=${reason}`);
-        onlineUsers.delete(userId.toString());
-        await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date(), socketId: null });
-        emitOnlineUsers(io);
+        console.log(
+          `🔌 Socket disconnected: ${socket.id} | user=${userId} | reason=${reason}`
+        );
+
+        onlineUsers.delete(userId);
+
+        await User.findByIdAndUpdate(userId, {
+          isOnline: false,
+          lastSeen: new Date(),
+          socketId: null,
+        });
+
+        await emitOnlineUsers(io);
       } catch (err) {
         console.error("disconnect error:", err.message);
       }
     });
   });
 
-  // -------------------------
-  // EMIT ONLINE USERS
-  // -------------------------
-  const emitOnlineUsers = async (io) => {
+  // =========================
+  // ONLINE USERS EMITTER
+  // =========================
+  const emitOnlineUsers = async (ioInstance) => {
     try {
-      const users = await User.find({}, "username isOnline lastSeen").lean();
-      const count = users.filter(u => u.isOnline).length;
+      const users = await User.find({}, "username nickname isOnline lastSeen").lean();
+      const count = users.filter((u) => u.isOnline).length;
+
       const usersMap = {};
-      users.forEach(u => {
-        const id = u._id ? u._id.toString() : String(u.id || u._id);
-        usersMap[id] = { username: u.username, isOnline: !!u.isOnline, lastSeen: u.lastSeen };
+      users.forEach((u) => {
+        const id = u._id.toString();
+        usersMap[id] = {
+          username: u.username,
+          nickname: u.nickname,
+          isOnline: !!u.isOnline,
+          lastSeen: u.lastSeen,
+        };
       });
-      io.emit("onlineUsers", { count, users: usersMap });
+
+      ioInstance.emit("onlineUsers", { count, users: usersMap });
     } catch (err) {
       console.error("emitOnlineUsers error:", err.message);
     }
   };
 };
-
