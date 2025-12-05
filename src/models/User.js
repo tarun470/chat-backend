@@ -17,7 +17,7 @@ const userSchema = new mongoose.Schema(
     password: {
       type: String,
       required: true,
-      select: false,               // IMPORTANT: Prevents leaking hashed password
+      select: false, // prevents leaking password anywhere
     },
 
     //
@@ -31,7 +31,7 @@ const userSchema = new mongoose.Schema(
 
     avatar: {
       type: String,
-      default: null,
+      default: "https://api.dicebear.com/7.x/identicon/svg?seed=user",
     },
 
     bio: {
@@ -55,20 +55,11 @@ const userSchema = new mongoose.Schema(
     },
 
     //
-    // PUSH NOTIFICATIONS
+    // DEVICE & PUSH
     //
     fcmToken: {
       type: String,
       default: null,
-    },
-
-    //
-    // SOCKET.IO SESSION
-    //
-    socketId: {
-      type: String,
-      default: null,
-      index: true,
     },
 
     deviceInfo: {
@@ -77,10 +68,23 @@ const userSchema = new mongoose.Schema(
     },
 
     //
+    // SOCKET CONNECTION
+    //
+    socketId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    //
     // PRIVACY FEATURES
     //
     blockedUsers: [
-      { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        index: true,
+      },
     ],
 
     allowReadReceipts: {
@@ -102,8 +106,19 @@ const userSchema = new mongoose.Schema(
       index: true,
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
+
+//
+// VIRTUALS
+//
+userSchema.virtual("displayName").get(function () {
+  return this.nickname || this.username;
+});
 
 //
 // INDEXES FOR PERFORMANCE
