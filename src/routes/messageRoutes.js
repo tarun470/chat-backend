@@ -6,24 +6,45 @@ import {
   editMessage,
   deleteMessage,
   markAsSeen,
+  markAsDelivered,
+  addReaction,
+  removeReaction,
 } from "../controllers/messageController.js";
+
 import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Fetch messages (supports pagination, room filter)
+// ========================
+// MESSAGE CRUD
+// ========================
+
+// Fetch messages (pagination, room filter)
 router.get("/", protect, getMessages);
 
-// Create message (text, file, image, reply)
+// Send message (text, image, file, reply)
 router.post("/", protect, sendMessage);
 
-// Edit message (sender only)
+// Edit message
 router.put("/:id", protect, editMessage);
 
-// Delete message (local delete OR delete for everyone)
+// Delete message (for me OR everyone)
 router.delete("/:id", protect, deleteMessage);
 
 // Mark message as seen
 router.post("/:id/seen", protect, markAsSeen);
+
+// Mark message as delivered
+router.post("/:id/delivered", protect, markAsDelivered);
+
+// ========================
+// MESSAGE REACTIONS
+// ========================
+
+// Add emoji reaction
+router.post("/:id/react", protect, addReaction);
+
+// Remove emoji reaction
+router.delete("/:id/react", protect, removeReaction);
 
 export default router;

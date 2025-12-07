@@ -5,59 +5,61 @@ dotenv.config();
 
 const MONGO_URI = process.env.MONGO_URI;
 
-let isConnected = false; // Prevent multiple connections
+let isConnected = false;
+let isRetrying = false; // prevent duplicate reconnection loops
 
 const connectDB = async () => {
   if (!MONGO_URI) {
-    console.error("❌ ERROR: MONGO_URI missing in environment variables!");
+    console.error("❌ ERROR: MONGO_URI missing!");
     process.exit(1);
   }
 
   if (isConnected) {
-    console.log("ℹ️ MongoDB already connected. Reusing existing connection.");
+    console.log("ℹ️ Mongo already connected.");
     return;
   }
 
   const connect = async () => {
     try {
       await mongoose.connect(MONGO_URI, {
-        maxPoolSize: 20,                 // Better concurrency for chat apps
-        minPoolSize: 5,                  // Keep warm connections ready
-        serverSelectionTimeoutMS: 5000,  // Fail fast
+        maxPoolSize: 50,
+        minPoolSize: 5,
+        serverSelectionTimeoutMS: 5000,
         socketTimeoutMS: 45000,
-        autoIndex: false,                // Improve performance in production
-        retryWrites: true,               // Safe writes on network interruptions
+        autoIndex: process.env.NODE_ENV !== "production",
+        retryWrites: true,
         w: "majority",
       });
 
       isConnected = true;
-      console.log("✅ MongoDB Atlas Connected Successfully");
-    } 
-    catch (error) {
+      isRetrying = false;
+      console.log("✅ MongoDB Connected");
+    } catch (error) {
       isConnected = false;
-      console.error("❌ MongoDB Connection Failed:", error.message);
-      console.log("⏳ Retrying in 5 seconds...");
-      setTimeout(connect, 5000);
+
+      if (!isRetrying) {
+        isRetrying = true;
+        console.error("❌ Connection Failed:", error.message);
+        console.log("⏳ Retrying in 5 seconds…");
+        setTimeout(connect, 5000);
+      }
     }
   };
 
   connect();
 
-  // ----------------------------------------------------
-  // 🔁 Lifecycle Events — auto healing
-  // ----------------------------------------------------
-  mongoose.connection.on("connected", () => {
-    console.log("🟢 MongoDB connection established");
-  });
-
   mongoose.connection.on("disconnected", () => {
     isConnected = false;
-    console.warn("🟡 MongoDB disconnected — retrying in 5s…");
-    setTimeout(connect, 5000);
+    if (!isRetrying) {
+      isRetrying = true;
+      console.warn("🟡 MongoDB disconnected — reconnecting…");
+      setTimeout(connect, 5000);
+    }
   });
 
   mongoose.connection.on("reconnected", () => {
     isConnected = true;
+    isRetrying = false;
     console.log("🔄 MongoDB reconnected");
   });
 
@@ -65,12 +67,15 @@ const connectDB = async () => {
     console.error("❌ MongoDB error:", err.message);
   });
 
-  // Graceful shutdown (Render recommended)
-  process.on("SIGINT", async () => {
+  // Graceful shutdown for both SIGINT & SIGTERM
+  const closeConnection = async () => {
     await mongoose.connection.close();
-    console.log("🔻 MongoDB disconnected through app termination");
+    console.log("🔻 MongoDB disconnected gracefully");
     process.exit(0);
-  });
+  };
+
+  process.on("SIGINT", closeConnection);
+  process.on("SIGTERM", closeConnection);
 };
 
 export default connectDB;

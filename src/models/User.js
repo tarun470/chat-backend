@@ -1,10 +1,9 @@
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 
 const userSchema = new mongoose.Schema(
   {
-    //
-    // AUTH INFO
-    //
+    // AUTH FIELDS
     username: {
       type: String,
       required: true,
@@ -12,21 +11,25 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
       index: true,
+      minlength: 3,
+      maxlength: 30,
+      match: /^[a-zA-Z0-9._-]+$/, // prevent unsafe characters
     },
 
     password: {
       type: String,
       required: true,
-      select: false, // prevents leaking password anywhere
+      select: false,
+      minlength: 6,
     },
 
-    //
     // PROFILE INFO
-    //
     nickname: {
       type: String,
       required: true,
       trim: true,
+      minlength: 2,
+      maxlength: 30,
     },
 
     avatar: {
@@ -37,12 +40,11 @@ const userSchema = new mongoose.Schema(
     bio: {
       type: String,
       trim: true,
+      maxlength: 200,
       default: "",
     },
 
-    //
     // STATUS & PRESENCE
-    //
     isOnline: {
       type: Boolean,
       default: false,
@@ -54,31 +56,18 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
 
-    //
-    // DEVICE & PUSH
-    //
-    fcmToken: {
-      type: String,
-      default: null,
-    },
+    // DEVICE INFO
+    fcmToken: { type: String, default: null },
+    deviceInfo: { type: String, default: null },
 
-    deviceInfo: {
-      type: String,
-      default: null,
-    },
-
-    //
     // SOCKET CONNECTION
-    //
     socketId: {
       type: String,
       default: null,
       index: true,
     },
 
-    //
-    // PRIVACY FEATURES
-    //
+    // PRIVACY SETTINGS
     blockedUsers: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -87,20 +76,11 @@ const userSchema = new mongoose.Schema(
       },
     ],
 
-    allowReadReceipts: {
-      type: Boolean,
-      default: true,
-    },
+    allowReadReceipts: { type: Boolean, default: true },
+    allowLastSeen: { type: Boolean, default: true },
 
-    allowLastSeen: {
-      type: Boolean,
-      default: true,
-    },
-
-    //
     // ACCOUNT STATUS
-    //
-    suspended: {
+    isSuspended: {   // <-- FIXED NAME
       type: Boolean,
       default: false,
       index: true,
@@ -114,6 +94,15 @@ const userSchema = new mongoose.Schema(
 );
 
 //
+// PASSWORD HASHING (IMPORTANT SECURITY FIX)
+//
+userSchema.pre("save", async function (next) {
+  if (!this.isModified("password")) return next();
+  this.password = await bcrypt.hash(this.password, 10);
+  next();
+});
+
+//
 // VIRTUALS
 //
 userSchema.virtual("displayName").get(function () {
@@ -121,11 +110,12 @@ userSchema.virtual("displayName").get(function () {
 });
 
 //
-// INDEXES FOR PERFORMANCE
+// INDEXES
 //
 userSchema.index({ username: 1 });
+userSchema.index({ nickname: 1 }); // <-- added for search performance
 userSchema.index({ isOnline: 1 });
 userSchema.index({ socketId: 1 });
-userSchema.index({ suspended: 1 });
+userSchema.index({ isSuspended: 1 });
 
 export default mongoose.model("User", userSchema);

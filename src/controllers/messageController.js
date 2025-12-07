@@ -3,82 +3,72 @@ import User from "../models/User.js";
 import mongoose from "mongoose";
 
 // =========================
-// Utility: Format message DTO
+// Utility: Format Message DTO
 // =========================
-const formatMessage = (m, currentUserId) => {
-  const reactionsCount = {};
-  (m.reactions || []).forEach((r) => {
-    reactionsCount[r.emoji] = (reactionsCount[r.emoji] || 0) + 1;
+const formatMessage = (msg, currentUserId) => {
+  // Build reaction summary
+  const reactionSummary = {};
+  (msg.reactions || []).forEach(({ emoji }) => {
+    reactionSummary[emoji] = (reactionSummary[emoji] || 0) + 1;
   });
 
-  const isDelivered = (m.deliveredTo || []).some(
-    (id) => id.toString() === currentUserId.toString()
-  );
-
-  const isSeen = (m.seenBy || []).some(
-    (id) => id.toString() === currentUserId.toString()
-  );
-
   return {
-    _id: m._id,
-    sender: m.sender,
-    content: m.content,
-    type: m.type,
-    fileUrl: m.fileUrl,
-    fileName: m.fileName,
-    roomId: m.roomId,
-    replyTo: m.replyTo || null,
-    createdAt: m.createdAt,
-    updatedAt: m.updatedAt,
-    edited: m.edited,
-    reactions: reactionsCount,
-    isDelivered,
-    isSeen,
-    deletedForEveryone: m.deletedForEveryone || false,
+    _id: msg._id,
+    sender: msg.sender,
+    content: msg.content,
+    type: msg.type,
+    fileUrl: msg.fileUrl,
+    fileName: msg.fileName,
+    roomId: msg.roomId,
+    replyTo: msg.replyTo || null,
+    createdAt: msg.createdAt,
+    updatedAt: msg.updatedAt,
+    edited: msg.edited,
+
+    reactions: reactionSummary,
+
+    isDelivered: msg.deliveredTo?.includes(currentUserId) || false,
+    isSeen: msg.seenBy?.includes(currentUserId) || false,
+
+    deletedForEveryone: msg.deletedForEveryone || false,
   };
 };
 
 // =========================
-// GET messages (pagination)
+// GET Messages (Paginated)
 // =========================
 export const getMessages = async (req, res) => {
   try {
-    const room = req.query.room || "global";
-    const limit = Math.min(parseInt(req.query.limit || "50"), 200);
+    const userId = req.user._id.toString();
+    const roomId = req.query.room || "global";
+    const limit = Math.min(Number(req.query.limit || 50), 200);
     const before = req.query.before ? new Date(req.query.before) : null;
 
     const filter = {
-      roomId: room,
+      roomId,
       deletedForEveryone: { $ne: true },
     };
 
     if (before) filter.createdAt = { $lt: before };
 
-    const rawMessages = await Message.find(filter)
-      .sort({ createdAt: -1 }) // newest first (efficient)
+    const raw = await Message.find(filter)
+      .sort({ createdAt: -1 }) // fastest index-friendly sorting
       .limit(limit)
       .populate("sender", "username nickname avatar")
       .populate({
         path: "replyTo",
-        populate: {
-          path: "sender",
-          select: "username nickname avatar",
-        },
+        populate: { path: "sender", select: "username nickname avatar" },
       })
-      .lean(); // major speed boost
+      .lean();
 
-    // Filter "delete for me"
-    const userId = req.user._id.toString();
-    const filtered = rawMessages.filter((m) => {
-      const delList = (m.deletedFor || []).map((id) => id.toString());
-      return !delList.includes(userId);
-    });
+    // Remove "delete for me"
+    const cleaned = raw.filter((m) => !(m.deletedFor || []).includes(userId));
 
-    const messages = filtered.reverse().map((m) => formatMessage(m, req.user._id));
+    const messages = cleaned.reverse().map((m) => formatMessage(m, userId));
 
-    res.json({
+    return res.json({
       messages,
-      hasMore: filtered.length === limit, // Infinite scroll helper
+      hasMore: cleaned.length === limit,
     });
   } catch (err) {
     console.error("getMessages error:", err);
@@ -87,29 +77,38 @@ export const getMessages = async (req, res) => {
 };
 
 // =========================
-// SEND message (REST fallback)
+// SEND Message
 // =========================
 export const sendMessage = async (req, res) => {
   try {
-    const { content, type, roomId, receiver, replyTo, fileUrl, fileName } =
+    const { content, type = "text", roomId = "global", receiver, replyTo, fileUrl, fileName } =
       req.body;
 
-    const msg = await Message.create({
+    // Basic validation
+    if (!content && !fileUrl) {
+      return res.status(400).json({ message: "Message cannot be empty" });
+    }
+
+    const message = await Message.create({
       sender: req.user._id,
       receiver: receiver ? new mongoose.Types.ObjectId(receiver) : null,
-      roomId: roomId || "global",
-      content: content || "",
-      type: type || "text",
+      roomId,
+      content,
+      type,
+      replyTo: replyTo || null,
       fileUrl: fileUrl || null,
       fileName: fileName || null,
-      replyTo: replyTo || null,
     });
 
-    const populated = await Message.findById(msg._id)
+    const populated = await Message.findById(message._id)
       .populate("sender", "username nickname avatar")
+      .populate({
+        path: "replyTo",
+        populate: { path: "sender", select: "username nickname avatar" },
+      })
       .lean();
 
-    res.status(201).json(formatMessage(populated, req.user._id));
+    return res.status(201).json(formatMessage(populated, req.user._id));
   } catch (err) {
     console.error("sendMessage error:", err);
     res.status(500).json({ message: "Server error" });
@@ -117,11 +116,11 @@ export const sendMessage = async (req, res) => {
 };
 
 // =========================
-// EDIT message
+// EDIT Message
 // =========================
 export const editMessage = async (req, res) => {
   try {
-    const id = req.params.id;
+    const { id } = req.params;
     const { content } = req.body;
 
     const msg = await Message.findById(id);
@@ -139,7 +138,7 @@ export const editMessage = async (req, res) => {
       .populate("sender", "username nickname avatar")
       .lean();
 
-    res.json(formatMessage(populated, req.user._id));
+    return res.json(formatMessage(populated, req.user._id));
   } catch (err) {
     console.error("editMessage error:", err);
     res.status(500).json({ message: "Server error" });
@@ -147,11 +146,11 @@ export const editMessage = async (req, res) => {
 };
 
 // =========================
-// DELETE message
+// DELETE Message
 // =========================
 export const deleteMessage = async (req, res) => {
   try {
-    const id = req.params.id;
+    const { id } = req.params;
     const forEveryone = req.query.forEveryone === "true";
 
     const msg = await Message.findById(id);
@@ -159,18 +158,19 @@ export const deleteMessage = async (req, res) => {
 
     const isSender = msg.sender.toString() === req.user._id.toString();
 
+    // DELETE FOR EVERYONE
     if (forEveryone) {
       if (!isSender)
         return res.status(403).json({ message: "Only sender can delete for all" });
 
       msg.deletedForEveryone = true;
       await msg.save();
+
       return res.json({ message: "Deleted for everyone" });
     }
 
-    // delete only for current user
-    if (!msg.deletedFor) msg.deletedFor = [];
-    msg.deletedFor.push(req.user._id);
+    // DELETE FOR USER ONLY
+    msg.deletedFor = Array.from(new Set([...(msg.deletedFor || []), req.user._id]));
     await msg.save();
 
     return res.json({ message: "Deleted for you" });
@@ -188,14 +188,14 @@ export const markAsSeen = async (req, res) => {
     const msg = await Message.findById(req.params.id);
     if (!msg) return res.status(404).json({ message: "Message not found" });
 
-    const userId = req.user._id.toString();
+    const userId = req.user._id;
 
-    if (!msg.seenBy.map(String).includes(userId)) {
+    if (!msg.seenBy.includes(userId)) {
       msg.seenBy.push(userId);
       await msg.save();
     }
 
-    res.json({ message: "Seen updated" });
+    return res.json({ message: "Seen updated" });
   } catch (err) {
     console.error("markAsSeen error:", err);
     res.status(500).json({ message: "Server error" });

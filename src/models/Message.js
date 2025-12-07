@@ -2,7 +2,6 @@ import mongoose from "mongoose";
 
 //
 // REACTION SUB-SCHEMA
-// Stores: { emoji: "❤️", user: ObjectId }
 //
 const reactionSchema = new mongoose.Schema(
   {
@@ -22,9 +21,7 @@ const reactionSchema = new mongoose.Schema(
 //
 const messageSchema = new mongoose.Schema(
   {
-    //
     // SENDER & RECEIVER
-    //
     sender: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -32,7 +29,6 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // null => room or global chat
     receiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -40,18 +36,14 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    //
-    // ROOM SYSTEM
-    //
+    // ROOM ID (string-based room chat or "global")
     roomId: {
       type: String,
       default: "global",
       index: true,
     },
 
-    //
     // MESSAGE CONTENT
-    //
     content: {
       type: String,
       default: "",
@@ -65,15 +57,11 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    //
     // FILE METADATA
-    //
     fileUrl: { type: String, default: null },
     fileName: { type: String, default: null },
 
-    //
-    // REPLY / THREAD
-    //
+    // REPLY THREAD
     replyTo: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Message",
@@ -81,17 +69,13 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    //
     // REACTIONS
-    //
     reactions: {
       type: [reactionSchema],
       default: [],
     },
 
-    //
     // DELIVERY / READ RECEIPTS
-    //
     deliveredTo: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -108,9 +92,7 @@ const messageSchema = new mongoose.Schema(
       },
     ],
 
-    //
-    // EDIT & DELETE STATUS
-    //
+    // UPDATE / DELETION FLAGS
     edited: { type: Boolean, default: false },
 
     deletedFor: [
@@ -129,24 +111,11 @@ const messageSchema = new mongoose.Schema(
 //
 // INDEXES FOR PERFORMANCE
 //
-
-// Frequently queried combinations
 messageSchema.index({ roomId: 1, createdAt: -1 });
 messageSchema.index({ sender: 1, createdAt: -1 });
 messageSchema.index({ receiver: 1, createdAt: -1 });
 messageSchema.index({ replyTo: 1 });
 messageSchema.index({ type: 1 });
-
-//
-// AUTO-POPULATE SENDER + REPLY SENDER
-//
-messageSchema.pre(/^find/, function (next) {
-  this.populate("sender", "username nickname avatar")
-    .populate({
-      path: "replyTo",
-      populate: { path: "sender", select: "username nickname avatar" },
-    });
-  next();
-});
+messageSchema.index({ createdAt: -1 }); // Helps fallback queries
 
 export default mongoose.model("Message", messageSchema);

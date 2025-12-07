@@ -2,35 +2,49 @@ import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
-// ==============================
+// Ensure secret exists
+if (!process.env.JWT_SECRET) {
+  console.error("❌ ERROR: JWT_SECRET missing in environment variables!");
+  process.exit(1);
+}
+
+// =====================================
 // REGISTER
-// ==============================
+// =====================================
 export const register = async (req, res) => {
   try {
-    const { username, password, nickname } = req.body;
+    let { username, password, nickname } = req.body;
 
     if (!username || !password || !nickname) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    // Normalize username
-    const cleanUsername = username.trim().toLowerCase();
+    // Trim inputs
+    username = username.trim().toLowerCase();
+    nickname = nickname.trim();
 
-    const existing = await User.findOne({ username: cleanUsername });
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    // Check user exists
+    const existing = await User.findOne({ username });
     if (existing) {
-      return res.status(400).json({ message: "User already exists" });
+      return res.status(409).json({ message: "User already exists" });
     }
 
     const hashed = await bcrypt.hash(password, 10);
 
     const user = await User.create({
-      username: cleanUsername,
+      username,
       password: hashed,
       nickname,
+      isOnline: true,
+      lastSeen: new Date(),
     });
 
     return res.status(201).json({
-      message: "Registered successfully",
+      message: "Registration successful",
       user: {
         id: user._id,
         username: user.username,
@@ -44,20 +58,19 @@ export const register = async (req, res) => {
   }
 };
 
-// ==============================
-// LOGIN — FIXED
-// ==============================
+// =====================================
+// LOGIN
+// =====================================
 export const login = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    let { username, password } = req.body;
 
     if (!username || !password)
       return res.status(400).json({ message: "Missing fields" });
 
-    const cleanUsername = username.trim().toLowerCase();
+    username = username.trim().toLowerCase();
 
-    // MUST include password because of select: false in schema
-    const user = await User.findOne({ username: cleanUsername }).select("+password");
+    const user = await User.findOne({ username }).select("+password");
 
     if (!user)
       return res.status(404).json({ message: "User not found" });
@@ -67,19 +80,28 @@ export const login = async (req, res) => {
       return res.status(401).json({ message: "Invalid password" });
 
     const token = jwt.sign(
-      { id: user._id },
+      {
+        id: user._id,
+        username: user.username,
+        nickname: user.nickname,
+      },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    return res.json({
-      message: "Login success",
+    // Update online status
+    user.isOnline = true;
+    user.lastSeen = new Date();
+    await user.save();
+
+    return res.status(200).json({
       token,
       user: {
         id: user._id,
         username: user.username,
         nickname: user.nickname,
       },
+      message: "Login successful",
     });
 
   } catch (err) {
@@ -88,11 +110,14 @@ export const login = async (req, res) => {
   }
 };
 
-// ==============================
+// =====================================
 // LOGOUT
-// ==============================
+// =====================================
 export const logout = async (req, res) => {
   try {
+    if (!req.user || !req.user.id)
+      return res.status(401).json({ message: "Unauthorized" });
+
     const user = await User.findById(req.user.id);
 
     if (!user)
@@ -101,7 +126,6 @@ export const logout = async (req, res) => {
     user.isOnline = false;
     user.lastSeen = new Date();
     user.socketId = null;
-
     await user.save();
 
     return res.json({ message: "Logged out successfully" });

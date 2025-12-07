@@ -5,13 +5,19 @@ import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Register
+// AUTH ROUTES
 router.post("/register", register);
-
-// Login
 router.post("/login", login);
 
-// Logout (protected)
+// Get logged-in user info
+router.get("/me", protect, (req, res) => {
+  res.json({
+    user: req.user,
+    message: "Authenticated",
+  });
+});
+
+// Logout user
 router.post("/logout", protect, logout);
 
 export default router;
