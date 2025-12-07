@@ -6,7 +6,6 @@ import mongoose from "mongoose";
 // Utility: Format Message DTO
 // =========================
 const formatMessage = (msg, currentUserId) => {
-  // Build reaction summary
   const reactionSummary = {};
   (msg.reactions || []).forEach(({ emoji }) => {
     reactionSummary[emoji] = (reactionSummary[emoji] || 0) + 1;
@@ -52,7 +51,7 @@ export const getMessages = async (req, res) => {
     if (before) filter.createdAt = { $lt: before };
 
     const raw = await Message.find(filter)
-      .sort({ createdAt: -1 }) // fastest index-friendly sorting
+      .sort({ createdAt: -1 })
       .limit(limit)
       .populate("sender", "username nickname avatar")
       .populate({
@@ -61,15 +60,11 @@ export const getMessages = async (req, res) => {
       })
       .lean();
 
-    // Remove "delete for me"
     const cleaned = raw.filter((m) => !(m.deletedFor || []).includes(userId));
 
     const messages = cleaned.reverse().map((m) => formatMessage(m, userId));
 
-    return res.json({
-      messages,
-      hasMore: cleaned.length === limit,
-    });
+    return res.json({ messages, hasMore: cleaned.length === limit });
   } catch (err) {
     console.error("getMessages error:", err);
     res.status(500).json({ message: "Server error" });
@@ -81,10 +76,16 @@ export const getMessages = async (req, res) => {
 // =========================
 export const sendMessage = async (req, res) => {
   try {
-    const { content, type = "text", roomId = "global", receiver, replyTo, fileUrl, fileName } =
-      req.body;
+    const {
+      content,
+      type = "text",
+      roomId = "global",
+      receiver,
+      replyTo,
+      fileUrl,
+      fileName,
+    } = req.body;
 
-    // Basic validation
     if (!content && !fileUrl) {
       return res.status(400).json({ message: "Message cannot be empty" });
     }
@@ -158,7 +159,6 @@ export const deleteMessage = async (req, res) => {
 
     const isSender = msg.sender.toString() === req.user._id.toString();
 
-    // DELETE FOR EVERYONE
     if (forEveryone) {
       if (!isSender)
         return res.status(403).json({ message: "Only sender can delete for all" });
@@ -169,8 +169,9 @@ export const deleteMessage = async (req, res) => {
       return res.json({ message: "Deleted for everyone" });
     }
 
-    // DELETE FOR USER ONLY
-    msg.deletedFor = Array.from(new Set([...(msg.deletedFor || []), req.user._id]));
+    msg.deletedFor = Array.from(
+      new Set([...(msg.deletedFor || []), req.user._id])
+    );
     await msg.save();
 
     return res.json({ message: "Deleted for you" });
@@ -198,6 +199,48 @@ export const markAsSeen = async (req, res) => {
     return res.json({ message: "Seen updated" });
   } catch (err) {
     console.error("markAsSeen error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// =========================
+// ADD REACTION  ✅ (NEW)
+// =========================
+export const addReaction = async (req, res) => {
+  try {
+    const { messageId, emoji } = req.body;
+    const userId = req.user._id.toString();
+
+    if (!emoji) {
+      return res.status(400).json({ message: "Emoji is required" });
+    }
+
+    const msg = await Message.findById(messageId);
+    if (!msg) return res.status(404).json({ message: "Message not found" });
+
+    // Remove user’s old reaction
+    msg.reactions = msg.reactions.filter(
+      (r) => r.userId.toString() !== userId
+    );
+
+    // Add new one
+    msg.reactions.push({ emoji, userId });
+
+    await msg.save();
+
+    // Build summary for frontend
+    const summary = {};
+    msg.reactions.forEach((r) => {
+      summary[r.emoji] = (summary[r.emoji] || 0) + 1;
+    });
+
+    return res.json({
+      message: "Reaction updated",
+      messageId,
+      reactions: summary,
+    });
+  } catch (err) {
+    console.error("addReaction error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
