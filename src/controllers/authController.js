@@ -2,6 +2,9 @@ import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
+// ==============================
+// REGISTER
+// ==============================
 export const register = async (req, res) => {
   try {
     const { username, password, nickname } = req.body;
@@ -25,9 +28,11 @@ export const register = async (req, res) => {
 
     return res.status(201).json({
       message: "Registered successfully",
-      userId: user._id,
-      username: user.username,
-      nickname: user.nickname,
+      user: {
+        id: user._id,
+        username: user.username,
+        nickname: user.nickname,
+      },
     });
 
   } catch (err) {
@@ -36,6 +41,9 @@ export const register = async (req, res) => {
   }
 };
 
+// ==============================
+// LOGIN — FIXED (IMPORTANT)
+// ==============================
 export const login = async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -43,16 +51,11 @@ export const login = async (req, res) => {
     if (!username || !password)
       return res.status(400).json({ message: "Missing fields" });
 
-    const user = await User.findOne({ username });
+    // MUST fetch password manually because select: false
+    const user = await User.findOne({ username }).select("+password");
 
     if (!user)
       return res.status(404).json({ message: "User not found" });
-
-    if (!user.password) {
-      return res.status(500).json({
-        message: "User password missing. Delete and re-register user."
-      });
-    }
 
     const valid = await bcrypt.compare(password, user.password);
     if (!valid)
@@ -65,10 +68,13 @@ export const login = async (req, res) => {
     );
 
     return res.json({
+      message: "Login success",
       token,
-      userId: user._id,
-      username: user.username,
-      nickname: user.nickname
+      user: {
+        id: user._id,
+        username: user.username,
+        nickname: user.nickname,
+      },
     });
 
   } catch (err) {
@@ -77,9 +83,13 @@ export const login = async (req, res) => {
   }
 };
 
+// ==============================
+// LOGOUT
+// ==============================
 export const logout = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user.id);
+
     if (!user)
       return res.status(404).json({ message: "User not found" });
 
@@ -88,10 +98,10 @@ export const logout = async (req, res) => {
     user.socketId = null;
     await user.save();
 
-    return res.json({ message: "Logged out" });
+    return res.json({ message: "Logged out successfully" });
+
   } catch (err) {
     console.error("Logout Error:", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
-
