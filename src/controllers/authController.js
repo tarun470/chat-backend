@@ -13,7 +13,10 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    const existing = await User.findOne({ username });
+    // Normalize username
+    const cleanUsername = username.trim().toLowerCase();
+
+    const existing = await User.findOne({ username: cleanUsername });
     if (existing) {
       return res.status(400).json({ message: "User already exists" });
     }
@@ -21,7 +24,7 @@ export const register = async (req, res) => {
     const hashed = await bcrypt.hash(password, 10);
 
     const user = await User.create({
-      username,
+      username: cleanUsername,
       password: hashed,
       nickname,
     });
@@ -42,7 +45,7 @@ export const register = async (req, res) => {
 };
 
 // ==============================
-// LOGIN — FIXED (IMPORTANT)
+// LOGIN — FIXED
 // ==============================
 export const login = async (req, res) => {
   try {
@@ -51,8 +54,10 @@ export const login = async (req, res) => {
     if (!username || !password)
       return res.status(400).json({ message: "Missing fields" });
 
-    // MUST fetch password manually because select: false
-    const user = await User.findOne({ username }).select("+password");
+    const cleanUsername = username.trim().toLowerCase();
+
+    // MUST include password because of select: false in schema
+    const user = await User.findOne({ username: cleanUsername }).select("+password");
 
     if (!user)
       return res.status(404).json({ message: "User not found" });
@@ -96,6 +101,7 @@ export const logout = async (req, res) => {
     user.isOnline = false;
     user.lastSeen = new Date();
     user.socketId = null;
+
     await user.save();
 
     return res.json({ message: "Logged out successfully" });
