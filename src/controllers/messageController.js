@@ -1,9 +1,8 @@
 import Message from "../models/Message.js";
-import User from "../models/User.js";
 import mongoose from "mongoose";
 
 // =========================
-// Utility: Format Message DTO
+// Format Message DTO
 // =========================
 const formatMessage = (msg, currentUserId) => {
   const reactionSummary = {};
@@ -34,37 +33,33 @@ const formatMessage = (msg, currentUserId) => {
 };
 
 // =========================
-// GET Messages (Paginated)
+// GET Messages
 // =========================
 export const getMessages = async (req, res) => {
   try {
     const userId = req.user._id.toString();
     const roomId = req.query.room || "global";
     const limit = Math.min(Number(req.query.limit || 50), 200);
-    const before = req.query.before ? new Date(req.query.before) : null;
 
-    const filter = {
+    const raw = await Message.find({
       roomId,
-      deletedForEveryone: { $ne: true },
-    };
-
-    if (before) filter.createdAt = { $lt: before };
-
-    const raw = await Message.find(filter)
+      deletedForEveryone: { $ne: true }
+    })
       .sort({ createdAt: -1 })
       .limit(limit)
       .populate("sender", "username nickname avatar")
       .populate({
         path: "replyTo",
-        populate: { path: "sender", select: "username nickname avatar" },
+        populate: { path: "sender", select: "username nickname avatar" }
       })
       .lean();
 
-    const cleaned = raw.filter((m) => !(m.deletedFor || []).includes(userId));
+    const cleaned = raw.filter(m => !(m.deletedFor || []).includes(userId));
 
-    const messages = cleaned.reverse().map((m) => formatMessage(m, userId));
-
-    return res.json({ messages, hasMore: cleaned.length === limit });
+    return res.json({
+      messages: cleaned.reverse().map(m => formatMessage(m, userId)),
+      hasMore: cleaned.length === limit
+    });
   } catch (err) {
     console.error("getMessages error:", err);
     res.status(500).json({ message: "Server error" });
@@ -76,23 +71,13 @@ export const getMessages = async (req, res) => {
 // =========================
 export const sendMessage = async (req, res) => {
   try {
-    const {
-      content,
-      type = "text",
-      roomId = "global",
-      receiver,
-      replyTo,
-      fileUrl,
-      fileName,
-    } = req.body;
+    const { content, type = "text", roomId = "global", replyTo, fileUrl, fileName } = req.body;
 
-    if (!content && !fileUrl) {
+    if (!content && !fileUrl)
       return res.status(400).json({ message: "Message cannot be empty" });
-    }
 
-    const message = await Message.create({
+    const msg = await Message.create({
       sender: req.user._id,
-      receiver: receiver ? new mongoose.Types.ObjectId(receiver) : null,
       roomId,
       content,
       type,
@@ -101,11 +86,11 @@ export const sendMessage = async (req, res) => {
       fileName: fileName || null,
     });
 
-    const populated = await Message.findById(message._id)
+    const populated = await Message.findById(msg._id)
       .populate("sender", "username nickname avatar")
       .populate({
         path: "replyTo",
-        populate: { path: "sender", select: "username nickname avatar" },
+        populate: { path: "sender", select: "username nickname avatar" }
       })
       .lean();
 
@@ -121,21 +106,18 @@ export const sendMessage = async (req, res) => {
 // =========================
 export const editMessage = async (req, res) => {
   try {
-    const { id } = req.params;
     const { content } = req.body;
+    const msg = await Message.findById(req.params.id);
 
-    const msg = await Message.findById(id);
     if (!msg) return res.status(404).json({ message: "Message not found" });
-
-    if (msg.sender.toString() !== req.user._id.toString()) {
+    if (msg.sender.toString() !== req.user._id.toString())
       return res.status(403).json({ message: "Not allowed" });
-    }
 
     msg.content = content;
     msg.edited = true;
     await msg.save();
 
-    const populated = await Message.findById(id)
+    const populated = await Message.findById(msg._id)
       .populate("sender", "username nickname avatar")
       .lean();
 
@@ -151,16 +133,13 @@ export const editMessage = async (req, res) => {
 // =========================
 export const deleteMessage = async (req, res) => {
   try {
-    const { id } = req.params;
-    const forEveryone = req.query.forEveryone === "true";
-
-    const msg = await Message.findById(id);
+    const msg = await Message.findById(req.params.id);
     if (!msg) return res.status(404).json({ message: "Message not found" });
 
-    const isSender = msg.sender.toString() === req.user._id.toString();
+    const forEveryone = req.query.forEveryone === "true";
 
     if (forEveryone) {
-      if (!isSender)
+      if (msg.sender.toString() !== req.user._id.toString())
         return res.status(403).json({ message: "Only sender can delete for all" });
 
       msg.deletedForEveryone = true;
@@ -169,9 +148,7 @@ export const deleteMessage = async (req, res) => {
       return res.json({ message: "Deleted for everyone" });
     }
 
-    msg.deletedFor = Array.from(
-      new Set([...(msg.deletedFor || []), req.user._id])
-    );
+    msg.deletedFor = Array.from(new Set([...(msg.deletedFor || []), req.user._id]));
     await msg.save();
 
     return res.json({ message: "Deleted for you" });
@@ -204,43 +181,67 @@ export const markAsSeen = async (req, res) => {
 };
 
 // =========================
-// ADD REACTION  ✅ (NEW)
+// MARK AS DELIVERED
+// =========================
+export const markAsDelivered = async (req, res) => {
+  try {
+    const msg = await Message.findById(req.params.id);
+    if (!msg) return res.status(404).json({ message: "Message not found" });
+
+    const userId = req.user._id;
+
+    if (!msg.deliveredTo.includes(userId)) {
+      msg.deliveredTo.push(userId);
+      await msg.save();
+    }
+
+    return res.json({ message: "Delivered updated" });
+  } catch (err) {
+    console.error("markAsDelivered error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// =========================
+// ADD Reaction
 // =========================
 export const addReaction = async (req, res) => {
   try {
-    const { messageId, emoji } = req.body;
-    const userId = req.user._id.toString();
+    const { emoji } = req.body;
+    const msg = await Message.findById(req.params.id);
 
-    if (!emoji) {
-      return res.status(400).json({ message: "Emoji is required" });
-    }
-
-    const msg = await Message.findById(messageId);
     if (!msg) return res.status(404).json({ message: "Message not found" });
 
-    // Remove user’s old reaction
-    msg.reactions = msg.reactions.filter(
-      (r) => r.userId.toString() !== userId
-    );
-
-    // Add new one
-    msg.reactions.push({ emoji, userId });
-
+    msg.reactions.push({ user: req.user._id, emoji });
     await msg.save();
 
-    // Build summary for frontend
-    const summary = {};
-    msg.reactions.forEach((r) => {
-      summary[r.emoji] = (summary[r.emoji] || 0) + 1;
-    });
-
-    return res.json({
-      message: "Reaction updated",
-      messageId,
-      reactions: summary,
-    });
+    return res.json({ message: "Reaction added" });
   } catch (err) {
     console.error("addReaction error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// =========================
+// REMOVE Reaction
+// =========================
+export const removeReaction = async (req, res) => {
+  try {
+    const { emoji } = req.body;
+
+    const msg = await Message.findById(req.params.id);
+    if (!msg) return res.status(404).json({ message: "Message not found" });
+
+    msg.reactions = msg.reactions.filter(
+      r => !(r.user.toString() === req.user._id.toString() && r.emoji === emoji)
+    );
+
+    await msg.save();
+
+    return res.json({ message: "Reaction removed" });
+  } catch (err) {
+    console.error("removeReaction error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
