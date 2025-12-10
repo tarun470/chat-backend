@@ -1,8 +1,7 @@
 import Message from "../models/Message.js";
-import mongoose from "mongoose";
 
 // =========================
-// Format Message DTO
+// FORMAT MESSAGE DTO
 // =========================
 const formatMessage = (msg, currentUserId) => {
   const reactionSummary = {};
@@ -12,19 +11,36 @@ const formatMessage = (msg, currentUserId) => {
 
   return {
     _id: msg._id,
-    sender: msg.sender,
+
+    // MAIN FIX 🔥
+    senderId: msg.sender?._id?.toString() || msg.sender?.toString(),
+    senderName: msg.sender?.nickname || "Unknown",
+    senderUsername: msg.sender?.username || null,
+    avatar: msg.sender?.avatar || null,
+
     content: msg.content,
     type: msg.type,
     fileUrl: msg.fileUrl,
     fileName: msg.fileName,
     roomId: msg.roomId,
-    replyTo: msg.replyTo || null,
+
+    replyTo: msg.replyTo
+      ? {
+          id: msg.replyTo._id,
+          content: msg.replyTo.content,
+          senderName: msg.replyTo.sender?.nickname || "Unknown",
+          senderAvatar: msg.replyTo.sender?.avatar || null,
+          type: msg.replyTo.type
+        }
+      : null,
+
     createdAt: msg.createdAt,
     updatedAt: msg.updatedAt,
     edited: msg.edited,
 
     reactions: reactionSummary,
 
+    // Status
     isDelivered: msg.deliveredTo?.includes(currentUserId) || false,
     isSeen: msg.seenBy?.includes(currentUserId) || false,
 
@@ -33,7 +49,7 @@ const formatMessage = (msg, currentUserId) => {
 };
 
 // =========================
-// GET Messages
+// GET MESSAGES
 // =========================
 export const getMessages = async (req, res) => {
   try {
@@ -50,14 +66,17 @@ export const getMessages = async (req, res) => {
       .populate("sender", "username nickname avatar")
       .populate({
         path: "replyTo",
-        populate: { path: "sender", select: "username nickname avatar" }
+        populate: {
+          path: "sender",
+          select: "username nickname avatar"
+        }
       })
       .lean();
 
-    const cleaned = raw.filter(m => !(m.deletedFor || []).includes(userId));
+    const cleaned = raw.filter((m) => !(m.deletedFor || []).includes(userId));
 
     return res.json({
-      messages: cleaned.reverse().map(m => formatMessage(m, userId)),
+      messages: cleaned.reverse().map((m) => formatMessage(m, userId)),
       hasMore: cleaned.length === limit
     });
   } catch (err) {
@@ -67,11 +86,12 @@ export const getMessages = async (req, res) => {
 };
 
 // =========================
-// SEND Message
+// SEND MESSAGE
 // =========================
 export const sendMessage = async (req, res) => {
   try {
-    const { content, type = "text", roomId = "global", replyTo, fileUrl, fileName } = req.body;
+    const { content, type = "text", roomId = "global", replyTo, fileUrl, fileName } =
+      req.body;
 
     if (!content && !fileUrl)
       return res.status(400).json({ message: "Message cannot be empty" });
@@ -83,14 +103,17 @@ export const sendMessage = async (req, res) => {
       type,
       replyTo: replyTo || null,
       fileUrl: fileUrl || null,
-      fileName: fileName || null,
+      fileName: fileName || null
     });
 
     const populated = await Message.findById(msg._id)
       .populate("sender", "username nickname avatar")
       .populate({
         path: "replyTo",
-        populate: { path: "sender", select: "username nickname avatar" }
+        populate: {
+          path: "sender",
+          select: "username nickname avatar"
+        }
       })
       .lean();
 
@@ -102,7 +125,7 @@ export const sendMessage = async (req, res) => {
 };
 
 // =========================
-// EDIT Message
+// EDIT MESSAGE
 // =========================
 export const editMessage = async (req, res) => {
   try {
@@ -129,7 +152,7 @@ export const editMessage = async (req, res) => {
 };
 
 // =========================
-// DELETE Message
+// DELETE MESSAGE
 // =========================
 export const deleteMessage = async (req, res) => {
   try {
@@ -148,7 +171,9 @@ export const deleteMessage = async (req, res) => {
       return res.json({ message: "Deleted for everyone" });
     }
 
-    msg.deletedFor = Array.from(new Set([...(msg.deletedFor || []), req.user._id]));
+    msg.deletedFor = Array.from(
+      new Set([...(msg.deletedFor || []), req.user._id])
+    );
     await msg.save();
 
     return res.json({ message: "Deleted for you" });
@@ -159,7 +184,7 @@ export const deleteMessage = async (req, res) => {
 };
 
 // =========================
-// MARK AS SEEN
+// MARK SEEN
 // =========================
 export const markAsSeen = async (req, res) => {
   try {
@@ -181,7 +206,7 @@ export const markAsSeen = async (req, res) => {
 };
 
 // =========================
-// MARK AS DELIVERED
+// MARK DELIVERED
 // =========================
 export const markAsDelivered = async (req, res) => {
   try {
@@ -203,13 +228,13 @@ export const markAsDelivered = async (req, res) => {
 };
 
 // =========================
-// ADD Reaction
+// ADD REACTION
 // =========================
 export const addReaction = async (req, res) => {
   try {
     const { emoji } = req.body;
-    const msg = await Message.findById(req.params.id);
 
+    const msg = await Message.findById(req.params.id);
     if (!msg) return res.status(404).json({ message: "Message not found" });
 
     msg.reactions.push({ user: req.user._id, emoji });
@@ -223,7 +248,7 @@ export const addReaction = async (req, res) => {
 };
 
 // =========================
-// REMOVE Reaction
+// REMOVE REACTION
 // =========================
 export const removeReaction = async (req, res) => {
   try {
@@ -233,7 +258,11 @@ export const removeReaction = async (req, res) => {
     if (!msg) return res.status(404).json({ message: "Message not found" });
 
     msg.reactions = msg.reactions.filter(
-      r => !(r.user.toString() === req.user._id.toString() && r.emoji === emoji)
+      (r) =>
+        !(
+          r.user.toString() === req.user._id.toString() &&
+          r.emoji === emoji
+        )
     );
 
     await msg.save();

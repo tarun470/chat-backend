@@ -25,47 +25,61 @@ const allowedMime = [
 
 export const uploadFile = async (req, res) => {
   try {
-    if (!req.file)
+    if (!req.file) {
       return res.status(400).json({ message: "No file uploaded" });
+    }
 
     const filePath = req.file.path;
     const fileExt = path.extname(req.file.originalname).toLowerCase();
+    const mime = req.file.mimetype;
 
-    // ---- SECURITY 1: Validate MIME + extension ----
-    if (!allowedMime.includes(req.file.mimetype) || !allowedExtensions.includes(fileExt)) {
-      await fs.unlink(filePath);
+    // -------------------------------
+    // 1️⃣ VALIDATE EXTENSION + MIME
+    // -------------------------------
+    if (!allowedExtensions.includes(fileExt) || !allowedMime.includes(mime)) {
+      await fs.unlink(filePath); // delete invalid file
       return res.status(400).json({
         message: "Unsupported file type",
         allowed: allowedExtensions.join(", "),
       });
     }
 
-    // ---- SECURITY 2: Size limit (15MB) ----
+    // -------------------------------
+    // 2️⃣ FILE SIZE LIMIT (15MB)
+    // -------------------------------
     if (req.file.size > 15 * 1024 * 1024) {
       await fs.unlink(filePath);
       return res.status(400).json({ message: "File too large (max 15MB)" });
     }
 
-    // ---- SECURITY 3: Sanitize filename ----
+    // -------------------------------
+    // 3️⃣ SANITIZE FILE NAME
+    // -------------------------------
     const cleanOriginalName = req.file.originalname.replace(/[^\w.-]+/g, "_");
 
-    // ---- BASE URL generation ----
+    // -------------------------------
+    // 4️⃣ BUILD PUBLIC URL
+    // -------------------------------
     let BASE = process.env.SERVER_BASE_URL || "";
-    BASE = BASE.replace(/\/+$/, ""); // remove ending slash
+    BASE = BASE.replace(/\/+$/, ""); // remove trailing slash
 
-    const publicUrl = `${BASE}/uploads/${req.file.filename}`;
+    const fileUrl = `${BASE}/uploads/${req.file.filename}`;
 
+    // -------------------------------
+    // 5️⃣ RESPONSE FORMAT (Matches Flutter expectations)
+    // -------------------------------
     return res.status(201).json({
-      url: publicUrl,
+      fileUrl,
       fileName: cleanOriginalName,
-      mimeType: req.file.mimetype,
+      mimeType: mime,
       size: req.file.size,
-      uploadedAt: new Date(),
+      uploadedAt: new Date().toISOString(),
     });
+
   } catch (err) {
     console.error("uploadFile error:", err);
 
-    // If multer created the file but error happened → delete it
+    // Remove created file if error happens
     if (req.file?.path) {
       try {
         await fs.unlink(req.file.path);

@@ -1,11 +1,11 @@
-// socket-handlers.js (Optimized Version)
+// socket-handlers.js (Nickname Version: Fully Updated)
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import crypto from "crypto";
 import Message from "../models/Message.js";
 import User from "../models/User.js";
 
-const onlineUsers = new Map(); // { userId: { socketId, username, nickname, avatar } }
+const onlineUsers = new Map(); // { userId: { socketId, nickname, avatar } }
 
 // ============================
 // Utility: Generate Secure DM Room ID
@@ -16,7 +16,7 @@ const getDMRoom = (id1, id2) => {
 };
 
 // ============================
-// Utility: Rate Limiting (Anti-Spam)
+// Utility: Rate Limiting
 // ============================
 const lastEvent = new Map();
 const rateLimit = (socket, event, ms) => {
@@ -31,16 +31,15 @@ const rateLimit = (socket, event, ms) => {
 // MAIN HANDLER
 // ============================
 export const handleChatSocket = (io) => {
-  // ------------------------------------
+  
   // AUTH MIDDLEWARE
-  // ------------------------------------
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) return next(new Error("No token provided"));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select("username nickname avatar blockedUsers");
+      const user = await User.findById(decoded.id).select("nickname avatar blockedUsers");
 
       if (!user) return next(new Error("User not found"));
 
@@ -54,27 +53,22 @@ export const handleChatSocket = (io) => {
     }
   });
 
-  // ------------------------------------
   // CONNECTION
-  // ------------------------------------
   io.on("connection", async (socket) => {
     const userId = socket.userId;
 
     console.log(`🔵 Connected: ${userId} | socket ${socket.id}`);
 
-    // Save in online memory map
+    // Save user in online memory
     onlineUsers.set(userId, {
       socketId: socket.id,
-      username: socket.userData.username,
       nickname: socket.userData.nickname,
       avatar: socket.userData.avatar,
     });
 
-    // Join personal + global room
     socket.join(userId);
     socket.join("global");
 
-    // Mark online in DB
     User.findByIdAndUpdate(userId, {
       isOnline: true,
       socketId: socket.id,
@@ -84,7 +78,7 @@ export const handleChatSocket = (io) => {
     emitOnlineUsers(io);
 
     // ============================
-    // Helper: Lean Message Formatting
+    // Build Message Payload
     // ============================
     const buildPayload = (m) => {
       if (!m) return null;
@@ -99,8 +93,7 @@ export const handleChatSocket = (io) => {
         sender: m.sender
           ? {
               _id: m.sender._id,
-              username: m.sender.username,
-              nickname: m.sender.nickname,
+              nickname: m.sender.nickname, // ONLY NICKNAME
               avatar: m.sender.avatar,
             }
           : null,
@@ -122,15 +115,15 @@ export const handleChatSocket = (io) => {
 
     const fetchMsg = async (id) =>
       Message.findById(id)
-        .populate("sender", "username nickname avatar")
+        .populate("sender", "nickname avatar")
         .populate({
           path: "replyTo",
-          populate: { path: "sender", select: "username nickname avatar" },
+          populate: { path: "sender", select: "nickname avatar" },
         })
         .lean();
 
     // ============================
-    // Helper: Fast Recipients
+    // Get users in room
     // ============================
     const getRecipients = async (roomId, exclude) => {
       const room = io.sockets.adapter.rooms.get(roomId) || new Set();
@@ -146,16 +139,9 @@ export const handleChatSocket = (io) => {
       if (!rateLimit(socket, "sendMessage", 150)) return;
 
       try {
-        const { content, roomId, receiver, type, replyTo, fileUrl, fileName, tempId } = data;
+        const { content, roomId, receiver, type, replyTo, fileUrl, fileName } = data;
         if ((!content || !content.trim()) && !fileUrl) return;
 
-        // ENFORCE BLOCKING
-        if (receiver) {
-          const recv = await User.findById(receiver).select("blockedUsers");
-          if (recv?.blockedUsers?.includes(socket.userId)) return;
-        }
-
-        // Room logic
         let finalRoom = roomId || "global";
         if (receiver && !roomId) finalRoom = getDMRoom(userId, receiver);
 
@@ -173,31 +159,24 @@ export const handleChatSocket = (io) => {
         const doc = await fetchMsg(msg._id);
         const payload = buildPayload(doc);
 
-        // Emit
-        if (receiver) {
-          io.to(receiver).emit("receiveMessage", payload);
-        }
+        if (receiver) io.to(receiver).emit("receiveMessage", payload);
         socket.emit("receiveMessage", payload);
         io.to(finalRoom).emit("receiveMessage", payload);
 
-        // Mark Delivered for active users
         const rec = await getRecipients(finalRoom, payload.sender._id);
         if (rec.length)
           Message.findByIdAndUpdate(msg._id, { $addToSet: { deliveredTo: rec } }).catch(() => {});
-
       } catch (err) {
         console.error("sendMessage:", err.message);
       }
     });
 
     // ============================
-    // MESSAGE SEEN
+    // SEEN STATUS
     // ============================
     socket.on("seen", async ({ messageId }) => {
       if (!rateLimit(socket, "seen", 80)) return;
       try {
-        if (!messageId) return;
-
         const msg = await Message.findById(messageId);
         if (!msg) return;
 
@@ -220,6 +199,7 @@ export const handleChatSocket = (io) => {
     // ============================
     socket.on("editMessage", async ({ messageId, content }) => {
       if (!rateLimit(socket, "editMessage", 200)) return;
+
       try {
         const msg = await Message.findById(messageId);
         if (!msg || msg.sender.toString() !== userId) return;
@@ -234,7 +214,6 @@ export const handleChatSocket = (io) => {
         const rec = await getRecipients(payload.roomId, userId);
         rec.forEach((id) => io.to(id).emit("messageEdited", payload));
         socket.emit("messageEdited", payload);
-
       } catch (err) {
         console.error("editMessage:", err.message);
       }
@@ -299,21 +278,20 @@ export const handleChatSocket = (io) => {
           messageId,
           reactions,
         });
-
       } catch (err) {
         console.error("reaction:", err.message);
       }
     });
 
     // ============================
-    // USER TYPING
+    // TYPING INDICATOR (Nickname Only)
     // ============================
     socket.on("typing", ({ roomId, isTyping, receiver }) => {
       if (!rateLimit(socket, "typing", 80)) return;
 
       const payload = {
         userId,
-        username: socket.userData.username,
+        nickname: socket.userData.nickname, // IMPORTANT
         isTyping: !!isTyping,
       };
 
@@ -340,13 +318,12 @@ export const handleChatSocket = (io) => {
   });
 
   // ============================
-  // ONLINE USERS (No DB Query!)
+  // SEND ONLINE USERS LIST
   // ============================
   const emitOnlineUsers = (io) => {
     const usersObj = {};
     for (const [id, data] of onlineUsers.entries()) {
       usersObj[id] = {
-        username: data.username,
         nickname: data.nickname,
         avatar: data.avatar,
         isOnline: true,

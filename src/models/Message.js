@@ -21,11 +21,19 @@ const reactionSchema = new mongoose.Schema(
 //
 const messageSchema = new mongoose.Schema(
   {
-    // SENDER & RECEIVER
+    // SENDER INFO
     sender: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
+    },
+
+    // 🔥 ADD THIS → Store nickname permanently in message
+    senderName: {
+      type: String,
+      required: true,
+      trim: true,
       index: true,
     },
 
@@ -36,14 +44,12 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ROOM ID (string-based room chat or "global")
     roomId: {
       type: String,
-      default: "global",
+      default: "general",
       index: true,
     },
 
-    // MESSAGE CONTENT
     content: {
       type: String,
       default: "",
@@ -57,11 +63,9 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // FILE METADATA
     fileUrl: { type: String, default: null },
     fileName: { type: String, default: null },
 
-    // REPLY THREAD
     replyTo: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Message",
@@ -69,13 +73,11 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // REACTIONS
     reactions: {
       type: [reactionSchema],
       default: [],
     },
 
-    // DELIVERY / READ RECEIPTS
     deliveredTo: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -92,7 +94,6 @@ const messageSchema = new mongoose.Schema(
       },
     ],
 
-    // UPDATE / DELETION FLAGS
     edited: { type: Boolean, default: false },
 
     deletedFor: [
@@ -109,13 +110,12 @@ const messageSchema = new mongoose.Schema(
 );
 
 //
-// INDEXES FOR PERFORMANCE
+// INDEXES
 //
 messageSchema.index({ roomId: 1, createdAt: -1 });
 messageSchema.index({ sender: 1, createdAt: -1 });
-messageSchema.index({ receiver: 1, createdAt: -1 });
-messageSchema.index({ replyTo: 1 });
+messageSchema.index({ senderName: 1 });
 messageSchema.index({ type: 1 });
-messageSchema.index({ createdAt: -1 }); // Helps fallback queries
+messageSchema.index({ createdAt: -1 });
 
 export default mongoose.model("Message", messageSchema);
