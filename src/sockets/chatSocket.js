@@ -1,6 +1,5 @@
-// socket-handlers.js (Nickname Version: Fully Updated)
+// socket-handlers.js (Nickname Version: Fully Updated & Fixed)
 import jwt from "jsonwebtoken";
-import mongoose from "mongoose";
 import crypto from "crypto";
 import Message from "../models/Message.js";
 import User from "../models/User.js";
@@ -16,7 +15,7 @@ const getDMRoom = (id1, id2) => {
 };
 
 // ============================
-// Utility: Rate Limiting
+// Rate Limiting
 // ============================
 const lastEvent = new Map();
 const rateLimit = (socket, event, ms) => {
@@ -31,16 +30,15 @@ const rateLimit = (socket, event, ms) => {
 // MAIN HANDLER
 // ============================
 export const handleChatSocket = (io) => {
-  
-  // AUTH MIDDLEWARE
+
+  // AUTH
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) return next(new Error("No token provided"));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select("nickname avatar blockedUsers");
-
+      const user = await User.findById(decoded.id).select("nickname avatar");
       if (!user) return next(new Error("User not found"));
 
       socket.userId = user._id.toString();
@@ -59,7 +57,6 @@ export const handleChatSocket = (io) => {
 
     console.log(`🔵 Connected: ${userId} | socket ${socket.id}`);
 
-    // Save user in online memory
     onlineUsers.set(userId, {
       socketId: socket.id,
       nickname: socket.userData.nickname,
@@ -78,38 +75,42 @@ export const handleChatSocket = (io) => {
     emitOnlineUsers(io);
 
     // ============================
-    // Build Message Payload
+    // FIXED buildPayload() for Flutter
     // ============================
     const buildPayload = (m) => {
       if (!m) return null;
 
-      const reactions = {};
-      (m.reactions || []).forEach((r) => {
-        reactions[r.emoji] = (reactions[r.emoji] || 0) + 1;
+      const reactionMap = {};
+      (m.reactions || []).forEach((x) => {
+        reactionMap[x.emoji] = (reactionMap[x.emoji] || 0) + 1;
       });
 
       return {
-        _id: m._id,
-        sender: m.sender
-          ? {
-              _id: m.sender._id,
-              nickname: m.sender.nickname, // ONLY NICKNAME
-              avatar: m.sender.avatar,
-            }
-          : null,
+        _id: m._id.toString(),
+
+        // FLAT FIELDS (Flutter requirement)
+        senderId: m.sender?._id?.toString() ?? "",
+        senderName: m.sender?.nickname ?? "Unknown",
+        senderAvatar: m.sender?.avatar ?? null,
+
         content: m.content,
         type: m.type,
-        fileUrl: m.fileUrl,
-        fileName: m.fileName,
+        fileUrl: m.fileUrl || null,
+        fileName: m.fileName || null,
         roomId: m.roomId,
-        replyTo: m.replyTo?._id || null,
-        createdAt: m.createdAt,
-        updatedAt: m.updatedAt,
-        deliveredTo: (m.deliveredTo || []).map(String),
-        seenBy: (m.seenBy || []).map(String),
+
+        replyTo: m.replyTo?._id?.toString() ?? null,
+
+        // ALWAYS ISO STRING (Flutter requirement)
+        createdAt: new Date(m.createdAt).toISOString(),
+        updatedAt: new Date(m.updatedAt || m.createdAt).toISOString(),
+
+        deliveredTo: (m.deliveredTo || []).map((id) => id.toString()),
+        seenBy: (m.seenBy || []).map((id) => id.toString()),
+
+        reactions: reactionMap,
         edited: !!m.edited,
-        reactions,
-        deletedForEveryone: m.deletedForEveryone || false,
+        deletedForEveryone: m.deletedForEveryone ?? false,
       };
     };
 
@@ -123,16 +124,6 @@ export const handleChatSocket = (io) => {
         .lean();
 
     // ============================
-    // Get users in room
-    // ============================
-    const getRecipients = async (roomId, exclude) => {
-      const room = io.sockets.adapter.rooms.get(roomId) || new Set();
-      return [...room]
-        .map((sid) => io.sockets.sockets.get(sid)?.userId)
-        .filter((uid) => uid && uid !== exclude);
-    };
-
-    // ============================
     // SEND MESSAGE
     // ============================
     socket.on("sendMessage", async (data = {}) => {
@@ -140,6 +131,7 @@ export const handleChatSocket = (io) => {
 
       try {
         const { content, roomId, receiver, type, replyTo, fileUrl, fileName } = data;
+
         if ((!content || !content.trim()) && !fileUrl) return;
 
         let finalRoom = roomId || "global";
@@ -159,23 +151,21 @@ export const handleChatSocket = (io) => {
         const doc = await fetchMsg(msg._id);
         const payload = buildPayload(doc);
 
-        if (receiver) io.to(receiver).emit("receiveMessage", payload);
-        socket.emit("receiveMessage", payload);
-        io.to(finalRoom).emit("receiveMessage", payload);
-
-        const rec = await getRecipients(finalRoom, payload.sender._id);
-        if (rec.length)
-          Message.findByIdAndUpdate(msg._id, { $addToSet: { deliveredTo: rec } }).catch(() => {});
+        if (receiver) {
+          io.to(receiver.toString()).emit("receiveMessage", payload);
+          io.to(userId).emit("receiveMessage", payload);
+        } else {
+          io.to(finalRoom).emit("receiveMessage", payload);
+        }
       } catch (err) {
         console.error("sendMessage:", err.message);
       }
     });
 
-    // ============================
-    // SEEN STATUS
-    // ============================
+    // SEEN
     socket.on("seen", async ({ messageId }) => {
       if (!rateLimit(socket, "seen", 80)) return;
+
       try {
         const msg = await Message.findById(messageId);
         if (!msg) return;
@@ -187,16 +177,14 @@ export const handleChatSocket = (io) => {
 
         io.to(msg.sender.toString()).emit("messageSeen", {
           messageId,
-          userId,
+          seenBy: msg.seenBy.map(String),
         });
       } catch (err) {
         console.error("seen:", err.message);
       }
     });
 
-    // ============================
-    // EDIT MESSAGE
-    // ============================
+    // EDIT
     socket.on("editMessage", async ({ messageId, content }) => {
       if (!rateLimit(socket, "editMessage", 200)) return;
 
@@ -211,87 +199,19 @@ export const handleChatSocket = (io) => {
         const updated = await fetchMsg(messageId);
         const payload = buildPayload(updated);
 
-        const rec = await getRecipients(payload.roomId, userId);
-        rec.forEach((id) => io.to(id).emit("messageEdited", payload));
-        socket.emit("messageEdited", payload);
+        io.to(msg.roomId).emit("messageEdited", payload);
       } catch (err) {
         console.error("editMessage:", err.message);
       }
     });
 
-    // ============================
-    // DELETE MESSAGE
-    // ============================
-    socket.on("deleteMessage", async ({ messageId, forEveryone }) => {
-      if (!rateLimit(socket, "deleteMessage", 200)) return;
-
-      try {
-        const msg = await Message.findById(messageId);
-        if (!msg) return;
-
-        const isSender = msg.sender.toString() === userId.toString();
-
-        if (forEveryone && isSender) {
-          msg.deletedForEveryone = true;
-          await msg.save();
-          io.to(msg.roomId).emit("messageDeleted", { messageId, forEveryone: true });
-        } else {
-          msg.deletedFor = msg.deletedFor || [];
-          if (!msg.deletedFor.includes(userId)) msg.deletedFor.push(userId);
-          await msg.save();
-
-          socket.emit("messageDeleted", { messageId, forEveryone: false });
-        }
-      } catch (err) {
-        console.error("deleteMessage:", err.message);
-      }
-    });
-
-    // ============================
-    // REACTIONS
-    // ============================
-    socket.on("addReaction", async ({ messageId, emoji }) => {
-      if (!rateLimit(socket, "reaction", 150)) return;
-
-      const allowed = ["❤️", "😂", "🔥", "👍", "👎", "😢"];
-      if (!allowed.includes(emoji)) return;
-
-      try {
-        const msg = await Message.findById(messageId);
-        if (!msg) return;
-
-        const idx = msg.reactions.findIndex(
-          (r) => r.user.toString() === userId && r.emoji === emoji
-        );
-
-        if (idx === -1) msg.reactions.push({ emoji, user: userId });
-        else msg.reactions.splice(idx, 1);
-
-        await msg.save();
-
-        const reactions = {};
-        msg.reactions.forEach((r) => {
-          reactions[r.emoji] = (reactions[r.emoji] || 0) + 1;
-        });
-
-        io.to(msg.roomId).emit("reactionUpdated", {
-          messageId,
-          reactions,
-        });
-      } catch (err) {
-        console.error("reaction:", err.message);
-      }
-    });
-
-    // ============================
-    // TYPING INDICATOR (Nickname Only)
-    // ============================
+    // TYPING
     socket.on("typing", ({ roomId, isTyping, receiver }) => {
       if (!rateLimit(socket, "typing", 80)) return;
 
       const payload = {
         userId,
-        nickname: socket.userData.nickname, // IMPORTANT
+        username: socket.userData.nickname,
         isTyping: !!isTyping,
       };
 
@@ -299,9 +219,7 @@ export const handleChatSocket = (io) => {
       else io.to(roomId || "global").emit("typing", payload);
     });
 
-    // ============================
     // DISCONNECT
-    // ============================
     socket.on("disconnect", async () => {
       onlineUsers.delete(userId);
 
@@ -312,27 +230,28 @@ export const handleChatSocket = (io) => {
       }).catch(() => {});
 
       emitOnlineUsers(io);
-
       console.log(`🔴 Disconnected: ${userId}`);
     });
   });
 
-  // ============================
-  // SEND ONLINE USERS LIST
-  // ============================
+  // ONLINE USERS + LAST SEEN
   const emitOnlineUsers = (io) => {
     const usersObj = {};
-    for (const [id, data] of onlineUsers.entries()) {
-      usersObj[id] = {
+    const lastSeen = { users: {} };
+    const now = new Date().toISOString();
+
+    for (const [uid, data] of onlineUsers.entries()) {
+      usersObj[uid] = {
+        username: data.nickname,
         nickname: data.nickname,
         avatar: data.avatar,
         isOnline: true,
       };
+
+      lastSeen.users[uid] = { lastSeen: now };
     }
 
-    io.emit("onlineUsers", {
-      count: onlineUsers.size,
-      users: usersObj,
-    });
+    io.emit("onlineUsers", { count: onlineUsers.size, users: usersObj });
+    io.emit("lastSeen", lastSeen);
   };
 };

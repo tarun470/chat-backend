@@ -1,7 +1,7 @@
 import Message from "../models/Message.js";
 
 // =========================
-// FORMAT MESSAGE DTO
+// FORMAT MESSAGE DTO  (FIXED VERSION)
 // =========================
 const formatMessage = (msg, currentUserId) => {
   const reactionSummary = {};
@@ -12,7 +12,6 @@ const formatMessage = (msg, currentUserId) => {
   return {
     _id: msg._id,
 
-    // MAIN FIX 🔥
     senderId: msg.sender?._id?.toString() || msg.sender?.toString(),
     senderName: msg.sender?.nickname || "Unknown",
     senderUsername: msg.sender?.username || null,
@@ -30,19 +29,19 @@ const formatMessage = (msg, currentUserId) => {
           content: msg.replyTo.content,
           senderName: msg.replyTo.sender?.nickname || "Unknown",
           senderAvatar: msg.replyTo.sender?.avatar || null,
-          type: msg.replyTo.type
+          type: msg.replyTo.type,
         }
       : null,
 
-    createdAt: msg.createdAt,
-    updatedAt: msg.updatedAt,
+    // ⭐ MAIN FIX – ALWAYS SEND ISO STRING
+    createdAt: msg.createdAt ? new Date(msg.createdAt).toISOString() : null,
+    updatedAt: msg.updatedAt ? new Date(msg.updatedAt).toISOString() : null,
     edited: msg.edited,
 
     reactions: reactionSummary,
 
-    // Status
-    isDelivered: msg.deliveredTo?.includes(currentUserId) || false,
-    isSeen: msg.seenBy?.includes(currentUserId) || false,
+    isDelivered: msg.deliveredTo?.map(String).includes(currentUserId) || false,
+    isSeen: msg.seenBy?.map(String).includes(currentUserId) || false,
 
     deletedForEveryone: msg.deletedForEveryone || false,
   };
@@ -59,25 +58,24 @@ export const getMessages = async (req, res) => {
 
     const raw = await Message.find({
       roomId,
-      deletedForEveryone: { $ne: true }
+      deletedForEveryone: { $ne: true },
     })
       .sort({ createdAt: -1 })
       .limit(limit)
       .populate("sender", "username nickname avatar")
       .populate({
         path: "replyTo",
-        populate: {
-          path: "sender",
-          select: "username nickname avatar"
-        }
+        populate: { path: "sender", select: "username nickname avatar" },
       })
       .lean();
 
-    const cleaned = raw.filter((m) => !(m.deletedFor || []).includes(userId));
+    const cleaned = raw.filter(
+      (m) => !(m.deletedFor || []).map(String).includes(userId)
+    );
 
     return res.json({
       messages: cleaned.reverse().map((m) => formatMessage(m, userId)),
-      hasMore: cleaned.length === limit
+      hasMore: cleaned.length === limit,
     });
   } catch (err) {
     console.error("getMessages error:", err);
@@ -90,8 +88,7 @@ export const getMessages = async (req, res) => {
 // =========================
 export const sendMessage = async (req, res) => {
   try {
-    const { content, type = "text", roomId = "global", replyTo, fileUrl, fileName } =
-      req.body;
+    const { content, type = "text", roomId = "global", replyTo, fileUrl, fileName } = req.body;
 
     if (!content && !fileUrl)
       return res.status(400).json({ message: "Message cannot be empty" });
@@ -103,17 +100,14 @@ export const sendMessage = async (req, res) => {
       type,
       replyTo: replyTo || null,
       fileUrl: fileUrl || null,
-      fileName: fileName || null
+      fileName: fileName || null,
     });
 
     const populated = await Message.findById(msg._id)
       .populate("sender", "username nickname avatar")
       .populate({
         path: "replyTo",
-        populate: {
-          path: "sender",
-          select: "username nickname avatar"
-        }
+        populate: { path: "sender", select: "username nickname avatar" },
       })
       .lean();
 
@@ -171,9 +165,7 @@ export const deleteMessage = async (req, res) => {
       return res.json({ message: "Deleted for everyone" });
     }
 
-    msg.deletedFor = Array.from(
-      new Set([...(msg.deletedFor || []), req.user._id])
-    );
+    msg.deletedFor = Array.from(new Set([...(msg.deletedFor || []), req.user._id]));
     await msg.save();
 
     return res.json({ message: "Deleted for you" });
@@ -184,7 +176,7 @@ export const deleteMessage = async (req, res) => {
 };
 
 // =========================
-// MARK SEEN
+// MARK AS SEEN
 // =========================
 export const markAsSeen = async (req, res) => {
   try {
@@ -193,7 +185,7 @@ export const markAsSeen = async (req, res) => {
 
     const userId = req.user._id;
 
-    if (!msg.seenBy.includes(userId)) {
+    if (!msg.seenBy.map(String).includes(userId.toString())) {
       msg.seenBy.push(userId);
       await msg.save();
     }
@@ -206,7 +198,7 @@ export const markAsSeen = async (req, res) => {
 };
 
 // =========================
-// MARK DELIVERED
+// MARK AS DELIVERED
 // =========================
 export const markAsDelivered = async (req, res) => {
   try {
@@ -215,7 +207,7 @@ export const markAsDelivered = async (req, res) => {
 
     const userId = req.user._id;
 
-    if (!msg.deliveredTo.includes(userId)) {
+    if (!msg.deliveredTo.map(String).includes(userId.toString())) {
       msg.deliveredTo.push(userId);
       await msg.save();
     }
@@ -259,10 +251,7 @@ export const removeReaction = async (req, res) => {
 
     msg.reactions = msg.reactions.filter(
       (r) =>
-        !(
-          r.user.toString() === req.user._id.toString() &&
-          r.emoji === emoji
-        )
+        !(r.user.toString() === req.user._id.toString() && r.emoji === emoji)
     );
 
     await msg.save();
